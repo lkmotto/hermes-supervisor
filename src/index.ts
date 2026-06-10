@@ -9,7 +9,6 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import initSqlJs from "sql.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -383,16 +382,27 @@ async function main() {
     console.error(`Hermes MCP starting on http://${host}:${port}`);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await server.connect(transport);
-    const app = createMcpExpressApp({ host });
-    app.get("/health", (_req, res) => {
-      res.json({ status: "ok", name: "hermes-supervisor", version: "1.0.0" });
+    const { createServer, IncomingMessage, ServerResponse } = await import("node:http");
+    const httpServer = createServer(async (req, res) => {
+      if (req.method === "GET" && req.url === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", name: "hermes-supervisor", version: "1.0.0" }));
+        return;
+      }
+      // Parse JSON body manually
+      let body: unknown = undefined;
+      if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks).toString();
+        if (raw) {
+          try { body = JSON.parse(raw); } catch { /* leave undefined */ }
+        }
+      }
+      await transport.handleRequest(req, res, body);
     });
-    app.post("/", (req, res) => {
-      transport.handleRequest(req, res, req.body);
-    });
-    app.listen(port, host, () => {
-      console.error(`Hermes MCP ready on ${host}:${port}`);
-    });
+    httpServer.listen(port, host);
+    console.error(`Hermes MCP ready on ${host}:${port}`);
   } else {
     const transport = new StdioServerTransport();
     await server.connect(transport);
