@@ -3,8 +3,10 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import Database from "better-sqlite3";
+import initSqlJs from "sql.js";
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 // ─── Config ────────────────────────────────────────────────────────
 
@@ -14,21 +16,43 @@ const HOSTINGER_API_BASE = "https://developers.hostinger.com";
 const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
 
-// ─── SQLite via better-sqlite3 (synchronous, instant) ──────────────
+// ─── SQLite via sql.js (debounced persist for speed) ───────────────
 
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.exec(`
-  CREATE TABLE IF NOT EXISTS memories (
-    id TEXT PRIMARY KEY,
-    category TEXT NOT NULL,
-    content TEXT NOT NULL,
-    metadata TEXT DEFAULT '{}',
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
-  CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
-`);
+let db: initSqlJs.Database;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function saveDb() {
+  const dir = dirname(DB_PATH);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(DB_PATH, Buffer.from(db.export()));
+}
+
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { saveDb(); saveTimer = null; }, 5000);
+}
+
+async function initDb() {
+  const SQL = await initSqlJs();
+  if (existsSync(DB_PATH)) {
+    db = new SQL.Database(readFileSync(DB_PATH));
+  } else {
+    db = new SQL.Database();
+  }
+  db.run("PRAGMA journal_mode = WAL");
+  db.run(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      category TEXT NOT NULL,
+      content TEXT NOT NULL,
+      metadata TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  db.run("CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)");
+  saveDb();
+}
 
 // ─── HTTP helpers ──────────────────────────────────────────────────
 
@@ -260,25 +284,34 @@ async function handleVpsRestart() {
 
 async function handleMemoryStore(args: { category: string; content: string; metadata?: Record<string, unknown> }) {
   const id = randomUUID();
-  db.prepare("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)").run(
-    id, args.category, args.content, JSON.stringify(args.metadata ?? {})
-  );
+  db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
+    [id, args.category, args.content, JSON.stringify(args.metadata ?? {})]);
+  scheduleSave();
   return { content: [{ type: "text", text: `Memory stored [${id}] in "${args.category}"` }] };
 }
 
 async function handleMemoryRecall(args: { category?: string; query?: string; limit?: number }) {
   const limit = args.limit ?? 20;
-  let rows: unknown[];
+  let stmt: ReturnType<typeof db.prepare>;
+  let params: unknown[] = [];
 
   if (args.category && args.query) {
-    rows = db.prepare("SELECT * FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?").all(args.category, `%${args.query}%`, limit);
+    stmt = db.prepare("SELECT * FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?");
+    params = [args.category, `%${args.query}%`, limit];
   } else if (args.category) {
-    rows = db.prepare("SELECT * FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?").all(args.category, limit);
+    stmt = db.prepare("SELECT * FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?");
+    params = [args.category, limit];
   } else if (args.query) {
-    rows = db.prepare("SELECT * FROM memories WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?").all(`%${args.query}%`, limit);
+    stmt = db.prepare("SELECT * FROM memories WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?");
+    params = [`%${args.query}%`, limit];
   } else {
-    rows = db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?").all(limit);
+    stmt = db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?");
+    params = [limit];
   }
+  const rows: unknown[] = [];
+  stmt.bind(params);
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
   return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
 }
 
@@ -294,9 +327,9 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
   const planText = result.choices?.[0]?.message?.content ?? "Plan generation failed";
 
   const id = randomUUID();
-  db.prepare("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)").run(
-    id, "plan", planText, JSON.stringify({ goal: args.goal, context: args.context ?? "" })
-  );
+  db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
+    [id, "plan", planText, JSON.stringify({ goal: args.goal, context: args.context ?? "" })]);
+  scheduleSave();
 
   return { content: [{ type: "text", text: `## Plan: ${args.goal}\n\n${planText}\n\n---\nStored [${id}]` }] };
 }
@@ -331,6 +364,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ─── Entrypoint ────────────────────────────────────────────────────
 
 async function main() {
+  await initDb();
+
   const argv = process.argv.slice(2);
   const useHttp = argv.includes("--http");
   const host = argv.includes("--host") ? argv[argv.indexOf("--host") + 1] : "0.0.0.0";
@@ -464,4 +499,6 @@ async function handleRpc(rpc: RpcRequest) {
   }
 }
 
+process.on("SIGTERM", () => { if (saveTimer) { clearTimeout(saveTimer); saveDb(); } process.exit(0); });
+process.on("SIGINT", () => { if (saveTimer) { clearTimeout(saveTimer); saveDb(); } process.exit(0); });
 main().catch((err) => { console.error("Fatal:", err); process.exit(1); });
