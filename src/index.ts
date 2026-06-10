@@ -12,7 +12,7 @@ import { dirname } from "node:path";
 
 const HOSTINGER_TOKEN = process.env.HOSTINGER_API_TOKEN ?? "";
 const PERPLEXITY_KEY = process.env.PERPLEXITY_API_KEY ?? "";
-const HOSTINGER_API_BASE = "https://api.hostinger.com";
+const HOSTINGER_API_BASE = "https://developers.hostinger.com";
 const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
 
