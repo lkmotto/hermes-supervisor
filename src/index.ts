@@ -3,10 +3,8 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import initSqlJs from "sql.js";
+import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 
 // ─── Config ────────────────────────────────────────────────────────
 
@@ -16,46 +14,21 @@ const HOSTINGER_API_BASE = "https://developers.hostinger.com";
 const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
 
-// ─── SQLite via sql.js (pure JS, no native deps) ───────────────────
+// ─── SQLite via better-sqlite3 (synchronous, instant) ──────────────
 
-interface HermesDb {
-  run(sql: string, params?: unknown[]): HermesDb;
-  prepare(sql: string): { bind(p: unknown[]): boolean; step(): boolean; getAsObject(): Record<string, unknown>; free(): boolean };
-  export(): Uint8Array;
-}
-
-let db: HermesDb;
-
-async function initDb() {
-  const SQL = await initSqlJs();
-  if (existsSync(DB_PATH)) {
-    const buf = readFileSync(DB_PATH);
-    db = new SQL.Database(buf);
-  } else {
-    db = new SQL.Database();
-  }
-  db.run("PRAGMA journal_mode = WAL");
-  db.run(`
-    CREATE TABLE IF NOT EXISTS memories (
-      id TEXT PRIMARY KEY,
-      category TEXT NOT NULL,
-      content TEXT NOT NULL,
-      metadata TEXT DEFAULT '{}',
-      created_at TEXT DEFAULT (datetime('now'))
-    )
-  `);
-  db.run("CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)");
-  saveDb();
-}
-
-function saveDb() {
-  const dir = dirname(DB_PATH);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const data = db.export();
-  const buf = Buffer.from(data);
-  writeFileSync(DB_PATH, buf);
-}
+const db = new Database(DB_PATH);
+db.pragma("journal_mode = WAL");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+  CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+`);
 
 // ─── HTTP helpers ──────────────────────────────────────────────────
 
@@ -287,34 +260,25 @@ async function handleVpsRestart() {
 
 async function handleMemoryStore(args: { category: string; content: string; metadata?: Record<string, unknown> }) {
   const id = randomUUID();
-  db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-    [id, args.category, args.content, JSON.stringify(args.metadata ?? {})]);
-  saveDb();
+  db.prepare("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)").run(
+    id, args.category, args.content, JSON.stringify(args.metadata ?? {})
+  );
   return { content: [{ type: "text", text: `Memory stored [${id}] in "${args.category}"` }] };
 }
 
 async function handleMemoryRecall(args: { category?: string; query?: string; limit?: number }) {
   const limit = args.limit ?? 20;
-  let stmt: ReturnType<typeof db.prepare>;
-  let params: unknown[] = [];
+  let rows: unknown[];
 
   if (args.category && args.query) {
-    stmt = db.prepare("SELECT * FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?");
-    params = [args.category, `%${args.query}%`, limit];
+    rows = db.prepare("SELECT * FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?").all(args.category, `%${args.query}%`, limit);
   } else if (args.category) {
-    stmt = db.prepare("SELECT * FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?");
-    params = [args.category, limit];
+    rows = db.prepare("SELECT * FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?").all(args.category, limit);
   } else if (args.query) {
-    stmt = db.prepare("SELECT * FROM memories WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?");
-    params = [`%${args.query}%`, limit];
+    rows = db.prepare("SELECT * FROM memories WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?").all(`%${args.query}%`, limit);
   } else {
-    stmt = db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?");
-    params = [limit];
+    rows = db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?").all(limit);
   }
-  const rows: unknown[] = [];
-  stmt.bind(params);
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
   return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
 }
 
@@ -330,9 +294,9 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
   const planText = result.choices?.[0]?.message?.content ?? "Plan generation failed";
 
   const id = randomUUID();
-  db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-    [id, "plan", planText, JSON.stringify({ goal: args.goal, context: args.context ?? "" })]);
-  saveDb();
+  db.prepare("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)").run(
+    id, "plan", planText, JSON.stringify({ goal: args.goal, context: args.context ?? "" })
+  );
 
   return { content: [{ type: "text", text: `## Plan: ${args.goal}\n\n${planText}\n\n---\nStored [${id}]` }] };
 }
@@ -367,8 +331,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ─── Entrypoint ────────────────────────────────────────────────────
 
 async function main() {
-  await initDb();
-
   const argv = process.argv.slice(2);
   const useHttp = argv.includes("--http");
   const host = argv.includes("--host") ? argv[argv.indexOf("--host") + 1] : "0.0.0.0";
