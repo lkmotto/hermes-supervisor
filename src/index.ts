@@ -12,6 +12,7 @@ import { dirname } from "node:path";
 
 const HOSTINGER_TOKEN = process.env.HOSTINGER_API_TOKEN ?? "";
 const PERPLEXITY_KEY = process.env.PERPLEXITY_API_KEY ?? "";
+const HOSTINGER_API_BASE = "https://api.hostinger.com";
 const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
 
@@ -59,7 +60,7 @@ function saveDb() {
 // ─── HTTP helpers ──────────────────────────────────────────────────
 
 async function hostingerGet(path: string) {
-  const res = await fetch(`https://developers.hostinger.com${path}`, {
+  const res = await fetch(`${HOSTINGER_API_BASE}${path}`, {
     headers: { Authorization: `Bearer ${HOSTINGER_TOKEN}`, Accept: "application/json" },
   });
   if (!res.ok) throw new Error(`Hostinger ${res.status}: ${await res.text()}`);
@@ -67,7 +68,7 @@ async function hostingerGet(path: string) {
 }
 
 async function hostingerPost(path: string, body?: unknown) {
-  const res = await fetch(`https://developers.hostinger.com${path}`, {
+  const res = await fetch(`${HOSTINGER_API_BASE}${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${HOSTINGER_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
     body: body ? JSON.stringify(body) : undefined,
@@ -243,34 +244,34 @@ async function handleVpsMetrics(args: { days?: number }) {
 }
 
 async function handleVpsProjects() {
-  const p = await hostingerGet(`/api/vps/v1/virtual-machines/${VPS_ID}/projects`);
+  const p = await hostingerGet(`/api/vps/v1/virtual-machines/${VPS_ID}/docker`);
   return { content: [{ type: "text", text: JSON.stringify(p, null, 2) }] };
 }
 
 async function handleVpsProjectLogs(args: { project: string }) {
-  const l = await hostingerGet(`/api/vps/v1/virtual-machines/${VPS_ID}/projects/${args.project}/logs`);
+  const l = await hostingerGet(`/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/logs`);
   return { content: [{ type: "text", text: JSON.stringify(l, null, 2) }] };
 }
 
 async function handleVpsRestartProject(args: { project: string }) {
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/projects/${args.project}/restart`);
+  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/restart`);
   return { content: [{ type: "text", text: `Project "${args.project}" restart initiated.\n${JSON.stringify(r, null, 2)}` }] };
 }
 
 async function handleVpsStopProject(args: { project: string }) {
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/projects/${args.project}/stop`);
+  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/stop`);
   return { content: [{ type: "text", text: `Project "${args.project}" stopped.\n${JSON.stringify(r, null, 2)}` }] };
 }
 
 async function handleVpsStartProject(args: { project: string }) {
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/projects/${args.project}/start`);
+  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/start`);
   return { content: [{ type: "text", text: `Project "${args.project}" started.\n${JSON.stringify(r, null, 2)}` }] };
 }
 
 async function handleVpsDeploy(args: { name: string; compose_content: string; environment?: string }) {
   const body: Record<string, unknown> = { project_name: args.name, content: args.compose_content };
   if (args.environment) body.environment = args.environment;
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/projects`, body);
+  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/docker`, body);
   return { content: [{ type: "text", text: `Project "${args.name}" deploying.\n${JSON.stringify(r, null, 2)}` }] };
 }
 
