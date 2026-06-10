@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  hermes:
+    build: .
+    container_name: hermes
+    restart: unless-stopped
+    ports:
+      - "8150:8150"
+    environment:
+      - HOSTINGER_API_TOKEN=${HOSTINGER_API_TOKEN}
+      - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+      - HERMES_VPS_ID=1511806
+      - HERMES_DB_PATH=/data/hermes.db
+    volumes:
+      - hermes_data:/data
+
+volumes:
+  hermes_data:
