@@ -9,6 +9,7 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import initSqlJs from "sql.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -382,17 +383,16 @@ async function main() {
     console.error(`Hermes MCP starting on http://${host}:${port}`);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await server.connect(transport);
-    const { createServer } = await import("node:http");
-    const httpServer = createServer(async (req, res) => {
-      if (req.method === "GET" && req.url === "/health") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "ok", name: "hermes-supervisor", version: "1.0.0" }));
-        return;
-      }
-      await transport.handleRequest(req, res);
+    const app = createMcpExpressApp({ host });
+    app.get("/health", (_req, res) => {
+      res.json({ status: "ok", name: "hermes-supervisor", version: "1.0.0" });
     });
-    httpServer.listen(port, host);
-    console.error(`Hermes MCP ready on ${host}:${port}`);
+    app.post("/", (req, res) => {
+      transport.handleRequest(req, res, req.body);
+    });
+    app.listen(port, host, () => {
+      console.error(`Hermes MCP ready on ${host}:${port}`);
+    });
   } else {
     const transport = new StdioServerTransport();
     await server.connect(transport);
