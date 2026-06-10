@@ -1,13 +1,8 @@
 #!/usr/bin/env node
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import initSqlJs from "sql.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
@@ -380,26 +375,71 @@ async function main() {
 
   if (useHttp) {
     console.error(`Hermes MCP starting on http://${host}:${port}`);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    await server.connect(transport);
-    const { createServer, IncomingMessage, ServerResponse } = await import("node:http");
+    const { createServer } = await import("node:http");
     const httpServer = createServer(async (req, res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, Mcp-Session-Id");
+
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
       if (req.method === "GET" && req.url === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ status: "ok", name: "hermes-supervisor", version: "1.0.0" }));
         return;
       }
-      // Parse JSON body manually
-      let body: unknown = undefined;
-      if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(chunk);
-        const raw = Buffer.concat(chunks).toString();
-        if (raw) {
-          try { body = JSON.parse(raw); } catch { /* leave undefined */ }
+
+      if (req.method === "POST") {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(chunk);
+          const raw = Buffer.concat(chunks).toString();
+          const rpc = JSON.parse(raw);
+
+          const result = await handleRpc(rpc);
+
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          });
+          res.write(`event: message\ndata: ${JSON.stringify(result)}\n\n`);
+          res.end();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          });
+          const errorResult = {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32603, message },
+          };
+          res.write(`event: message\ndata: ${JSON.stringify(errorResult)}\n\n`);
+          res.end();
         }
+        return;
       }
-      await transport.handleRequest(req, res, body);
+
+      // GET: SSE stream placeholder (required by MCP spec)
+      if (req.method === "GET") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        });
+        res.write(":ok\n\n");
+        res.end();
+        return;
+      }
+
+      res.writeHead(405);
+      res.end();
     });
     httpServer.listen(port, host);
     console.error(`Hermes MCP ready on ${host}:${port}`);
@@ -407,6 +447,57 @@ async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("Hermes MCP running (stdio)");
+  }
+}
+
+type RpcRequest = { jsonrpc: string; id: number | string; method: string; params?: Record<string, unknown> };
+
+async function handleRpc(rpc: RpcRequest) {
+  switch (rpc.method) {
+    case "initialize":
+      return {
+        jsonrpc: "2.0",
+        id: rpc.id,
+        result: {
+          protocolVersion: "2025-06-18",
+          capabilities: { tools: {} },
+          serverInfo: { name: "hermes-supervisor", version: "1.0.0" },
+        },
+      };
+    case "tools/list":
+      return {
+        jsonrpc: "2.0",
+        id: rpc.id,
+        result: { tools },
+      };
+    case "tools/call": {
+      const params = rpc.params as { name: string; arguments?: Record<string, unknown> };
+      const handlers: Record<string, (a: any) => Promise<{ content: { type: string; text: string }[] }>> = {
+        research: handleResearch, vps_info: handleVpsInfo, vps_metrics: handleVpsMetrics,
+        vps_projects: handleVpsProjects, vps_project_logs: handleVpsProjectLogs,
+        vps_restart_project: handleVpsRestartProject, vps_stop_project: handleVpsStopProject,
+        vps_start_project: handleVpsStartProject, vps_deploy: handleVpsDeploy,
+        vps_snapshot: handleVpsSnapshot, vps_restart: handleVpsRestart,
+        memory_store: handleMemoryStore, memory_recall: handleMemoryRecall, plan: handlePlan,
+      };
+      if (params.name in handlers) {
+        const result = await handlers[params.name](params.arguments ?? {});
+        return { jsonrpc: "2.0", id: rpc.id, result };
+      }
+      return {
+        jsonrpc: "2.0",
+        id: rpc.id,
+        error: { code: -32601, message: `Unknown tool: ${params.name}` },
+      };
+    }
+    case "notifications/initialized":
+      return { jsonrpc: "2.0", id: rpc.id, result: {} };
+    default:
+      return {
+        jsonrpc: "2.0",
+        id: rpc.id,
+        error: { code: -32601, message: `Unknown method: ${rpc.method}` },
+      };
   }
 }
 
