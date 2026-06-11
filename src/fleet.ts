@@ -4,6 +4,11 @@ interface FleetClientConfig {
   baseUrl: string;
   authToken: string;
   requestTimeoutMs?: number;
+  protocolVersion?: string;
+  clientInfo?: {
+    name: string;
+    version: string;
+  };
 }
 
 interface RpcErrorShape {
@@ -22,9 +27,32 @@ interface RpcEnvelope {
 function normalizeBaseUrl(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  const withoutTrailingSlash = trimmed.replace(/\/+$/, "");
-  if (withoutTrailingSlash.endsWith("/mcp")) return `${withoutTrailingSlash}/`;
-  return `${withoutTrailingSlash}/mcp/`;
+
+  try {
+    const url = new URL(trimmed);
+    const hostname = url.hostname.toLowerCase();
+    const isLoopback = hostname === "localhost"
+      || hostname === "127.0.0.1"
+      || hostname === "::1"
+      || hostname === "[::1]";
+    if (!isLoopback && url.protocol === "http:") {
+      url.protocol = "https:";
+    }
+
+    const pathname = url.pathname.replace(/\/+$/, "");
+    if (pathname.endsWith("/mcp")) {
+      url.pathname = pathname;
+    } else if (pathname.length === 0 || pathname === "/") {
+      url.pathname = "/mcp";
+    } else {
+      url.pathname = `${pathname}/mcp`;
+    }
+    return url.toString();
+  } catch {
+    const withoutTrailingSlash = trimmed.replace(/\/+$/, "");
+    if (withoutTrailingSlash.endsWith("/mcp")) return withoutTrailingSlash;
+    return `${withoutTrailingSlash}/mcp`;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -33,12 +61,18 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function parseRpcEnvelope(raw: string): RpcEnvelope {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("Empty response from fleet control plane.");
 
+  const envelopes: RpcEnvelope[] = [];
+
   try {
-    return JSON.parse(trimmed) as RpcEnvelope;
+    envelopes.push(JSON.parse(trimmed) as RpcEnvelope);
   } catch {
     // Streamable-http/SSE format: parse JSON payload from data lines.
   }
@@ -51,11 +85,20 @@ function parseRpcEnvelope(raw: string): RpcEnvelope {
 
   for (const dataLine of dataLines) {
     try {
-      return JSON.parse(dataLine) as RpcEnvelope;
+      envelopes.push(JSON.parse(dataLine) as RpcEnvelope);
     } catch {
       // continue
     }
   }
+
+  for (const envelope of envelopes) {
+    if (Object.prototype.hasOwnProperty.call(envelope, "result")
+      || Object.prototype.hasOwnProperty.call(envelope, "error")) {
+      return envelope;
+    }
+  }
+
+  if (envelopes.length > 0) return envelopes[0];
 
   throw new Error("Unable to parse fleet control plane response.");
 }
@@ -94,40 +137,76 @@ export class FleetClient {
   private readonly endpoint: string | null;
   private readonly authToken: string;
   private readonly requestTimeoutMs: number;
+  private readonly protocolVersion: string;
+  private readonly clientInfo: { name: string; version: string };
   private requestId = 0;
+  private sessionId: string | null = null;
+  private sessionInitialized = false;
+  private sessionPromise: Promise<void> | null = null;
+  private availableTools: Set<string> | null = null;
 
   constructor(config: FleetClientConfig) {
     this.endpoint = normalizeBaseUrl(config.baseUrl);
     this.authToken = config.authToken ?? "";
     this.requestTimeoutMs = config.requestTimeoutMs ?? 15000;
+    this.protocolVersion = config.protocolVersion ?? "2025-06-18";
+    this.clientInfo = config.clientInfo ?? {
+      name: "hermes-supervisor",
+      version: "unknown",
+    };
   }
 
   isConfigured(): boolean {
     return Boolean(this.endpoint && this.authToken.trim().length > 0);
   }
 
-  private async rpcCall(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private resetSession() {
+    this.sessionId = null;
+    this.sessionInitialized = false;
+    this.availableTools = null;
+  }
+
+  private nextRequestId(): number {
+    this.requestId += 1;
+    return this.requestId;
+  }
+
+  private async rpcCall(
+    method: string,
+    params: Record<string, unknown>,
+    options?: { includeSession?: boolean; notification?: boolean },
+  ): Promise<{ result: unknown; sessionId: string | null }> {
     if (!this.endpoint) throw new Error("Fleet MCP endpoint is not configured.");
     if (!this.authToken.trim()) throw new Error("Fleet MCP auth token is not configured.");
 
-    this.requestId += 1;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+
+    const includeSession = options?.includeSession ?? false;
+    const notification = options?.notification ?? false;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      Authorization: `Bearer ${this.authToken}`,
+    };
+    if (includeSession && this.sessionId) {
+      headers["Mcp-Session-Id"] = this.sessionId;
+    }
+
+    const payload: Record<string, unknown> = {
+      jsonrpc: "2.0",
+      method,
+      params,
+    };
+    if (!notification) {
+      payload.id = this.nextRequestId();
+    }
 
     try {
       const response = await fetch(this.endpoint, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          Authorization: `Bearer ${this.authToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: this.requestId,
-          method,
-          params,
-        }),
+        headers,
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
 
@@ -136,13 +215,21 @@ export class FleetClient {
         throw new Error(`Fleet MCP HTTP ${response.status}: ${redactSecrets(raw.slice(0, 500))}`);
       }
 
+      const responseSessionId = response.headers.get("mcp-session-id")?.trim()
+        ?? response.headers.get("Mcp-Session-Id")?.trim()
+        ?? null;
+
+      if (!raw.trim()) {
+        return { result: null, sessionId: responseSessionId };
+      }
+
       const envelope = parseRpcEnvelope(raw);
       if (envelope.error) {
         const err = envelope.error;
         const message = redactSecrets(String(err.message ?? "unknown fleet error"));
         throw new Error(`Fleet MCP RPC error (${err.code ?? "unknown"}): ${message}`);
       }
-      return envelope.result;
+      return { result: envelope.result, sessionId: responseSessionId };
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
         throw new Error(`Fleet MCP request timed out after ${this.requestTimeoutMs}ms.`);
@@ -153,9 +240,112 @@ export class FleetClient {
     }
   }
 
+  private shouldResetSession(error: unknown): boolean {
+    if (!this.sessionId) return false;
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    return message.includes("http 400")
+      || message.includes("http 404")
+      || message.includes("http 409")
+      || message.includes("session")
+      || message.includes("mcp-session-id");
+  }
+
+  private async initializeSession(): Promise<void> {
+    this.resetSession();
+
+    const initializeResult = await this.rpcCall(
+      "initialize",
+      {
+        protocolVersion: this.protocolVersion,
+        capabilities: {},
+        clientInfo: this.clientInfo,
+      },
+      { includeSession: false },
+    );
+
+    let sessionId = initializeResult.sessionId;
+    if (!sessionId) {
+      const resultRecord = asRecord(initializeResult.result);
+      const candidate = resultRecord.session_id ?? resultRecord.sessionId;
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        sessionId = candidate.trim();
+      }
+    }
+
+    if (!sessionId) {
+      throw new Error("Fleet MCP initialize did not return an Mcp-Session-Id.");
+    }
+
+    this.sessionId = sessionId;
+
+    await this.rpcCall(
+      "notifications/initialized",
+      {},
+      { includeSession: true, notification: true },
+    );
+
+    const toolsList = await this.rpcCall("tools/list", {}, { includeSession: true });
+    const tools = asArray(asRecord(toolsList.result).tools);
+    this.availableTools = new Set<string>(
+      tools
+        .map((tool) => asRecord(tool).name)
+        .filter((name): name is string => typeof name === "string" && name.length > 0),
+    );
+
+    this.sessionInitialized = true;
+  }
+
+  private async ensureSession(): Promise<void> {
+    if (this.sessionInitialized && this.sessionId) return;
+    if (!this.sessionPromise) {
+      this.sessionPromise = (async () => {
+        await this.initializeSession();
+      })();
+    }
+
+    try {
+      await this.sessionPromise;
+    } catch (error) {
+      this.resetSession();
+      throw error;
+    } finally {
+      this.sessionPromise = null;
+    }
+  }
+
   async callTool<T = unknown>(name: string, args: Record<string, unknown>): Promise<T> {
-    const result = await this.rpcCall("tools/call", { name, arguments: args });
-    return unwrapToolResult(result) as T;
+    await this.ensureSession();
+
+    if (this.availableTools && !this.availableTools.has(name)) {
+      const refresh = await this.rpcCall("tools/list", {}, { includeSession: true });
+      const tools = asArray(asRecord(refresh.result).tools);
+      this.availableTools = new Set<string>(
+        tools
+          .map((tool) => asRecord(tool).name)
+          .filter((toolName): toolName is string => typeof toolName === "string" && toolName.length > 0),
+      );
+    }
+
+    try {
+      const response = await this.rpcCall(
+        "tools/call",
+        { name, arguments: args },
+        { includeSession: true },
+      );
+      return unwrapToolResult(response.result) as T;
+    } catch (error) {
+      if (this.shouldResetSession(error)) {
+        this.resetSession();
+        await this.ensureSession();
+        const retry = await this.rpcCall(
+          "tools/call",
+          { name, arguments: args },
+          { includeSession: true },
+        );
+        return unwrapToolResult(retry.result) as T;
+      }
+      throw error;
+    }
   }
 
   async registerAgent(args: { name: string; kind: "variable" | "deterministic"; deploy_target?: string; version?: string }) {

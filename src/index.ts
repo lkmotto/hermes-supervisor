@@ -27,6 +27,7 @@ function resolveVersion(): string {
 }
 
 const VERSION = resolveVersion();
+const MCP_PROTOCOL_VERSION = "2025-06-18";
 
 interface BuildInfo {
   name: string;
@@ -77,6 +78,8 @@ const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "manag
 const FLEET_CONTROL_PLANE = new FleetClient({
   baseUrl: process.env.MOTTO_MCP_URL ?? "",
   authToken: process.env.MOTTO_MCP_AUTH_TOKEN ?? "",
+  protocolVersion: MCP_PROTOCOL_VERSION,
+  clientInfo: { name: "hermes-supervisor", version: VERSION },
 });
 
 // ─── SQLite via sql.js (debounced persist for speed) ───────────────
@@ -1156,7 +1159,7 @@ async function handleRpc(rpc: RpcRequest) {
         jsonrpc: "2.0",
         id: rpc.id,
         result: {
-          protocolVersion: "2025-06-18",
+          protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
           serverInfo: {
             name: "hermes-supervisor",
