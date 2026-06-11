@@ -6,7 +6,24 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@model
 import initSqlJs from "sql.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// ─── Version (sourced from package metadata) ───────────────────────
+
+function resolveVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgRaw = readFileSync(join(here, "..", "package.json"), "utf8");
+    const version = JSON.parse(pkgRaw).version;
+    if (typeof version === "string" && version.length > 0) return version;
+  } catch {
+    // fall through to default
+  }
+  return "0.0.0";
+}
+
+const VERSION = resolveVersion();
 
 // ─── Config ────────────────────────────────────────────────────────
 
@@ -337,7 +354,7 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
 // ─── Server ────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "hermes-supervisor", version: "1.0.0" },
+  { name: "hermes-supervisor", version: VERSION },
   { capabilities: { tools: {} } }
 );
 
@@ -387,7 +404,7 @@ async function main() {
 
       if (req.method === "GET" && req.url === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "ok", name: "hermes-supervisor", version: "1.0.0" }));
+        res.end(JSON.stringify({ status: "ok", name: "hermes-supervisor", version: VERSION }));
         return;
       }
 
@@ -459,7 +476,7 @@ async function handleRpc(rpc: RpcRequest) {
         result: {
           protocolVersion: "2025-06-18",
           capabilities: { tools: {} },
-          serverInfo: { name: "hermes-supervisor", version: "1.0.0" },
+          serverInfo: { name: "hermes-supervisor", version: VERSION },
         },
       };
     case "tools/list":
