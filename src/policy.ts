@@ -72,7 +72,7 @@ export const RISK_METADATA: Record<string, RiskMetadata> = {
   },
   business_management_cycle: {
     level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Writes structured fleet run/events/artifacts and heartbeats for Hermes business-management cycles.",
+    scope: "memory", summary: "Writes fleet run/events/artifacts plus intents, local tasks, capability requests, and correlated knowledge records for Hermes business-management cycles.",
   },
   fleet_get_run_details: {
     level: "read-only", mutating: false, confirmation_required: false, approval_required: false,

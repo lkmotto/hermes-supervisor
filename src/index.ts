@@ -177,6 +177,45 @@ interface FleetFailureRecord {
   status: "pending_retry";
 }
 
+interface KnowledgeFailureRecord {
+  operation: string;
+  correlation_id: string;
+  run_id: string | null;
+  error: string;
+  queued_at: string;
+  status: "pending_retry";
+}
+
+interface CoordinationIntentRequest {
+  target_agent: string;
+  kind: string;
+  payload?: Record<string, unknown>;
+  source_agent?: string;
+}
+
+interface LocalTaskRequest {
+  kind: string;
+  payload: Record<string, unknown>;
+  description?: string;
+  source?: string;
+  dedup_key?: string;
+  ttl_seconds?: number;
+}
+
+interface CapabilityRequest {
+  capability: string;
+  justification: string;
+  requested_by?: string;
+  repo?: string;
+  move_id?: number;
+}
+
+interface SimulateFailuresConfig {
+  fleet_operations?: unknown[];
+  fleet_sections?: unknown[];
+  knowledge_store?: boolean;
+}
+
 interface BusinessManagementCycleArgs {
   objective: string;
   correlation_id?: string;
@@ -184,6 +223,11 @@ interface BusinessManagementCycleArgs {
   plan?: unknown;
   proposed_actions?: unknown[];
   capability_gaps?: unknown[];
+  coordination_intents?: unknown[];
+  local_tasks?: unknown[];
+  capability_requests?: unknown[];
+  consume_intents_limit?: number;
+  simulate_failures?: SimulateFailuresConfig;
   validation_evidence?: unknown;
   learnings?: unknown[];
   pending_approvals?: number;
@@ -197,6 +241,7 @@ const fleetLifecycleState = {
   pendingApprovals: 0,
   blockedCapabilities: [] as string[],
   pendingRetries: [] as FleetFailureRecord[],
+  pendingKnowledgeRetries: [] as KnowledgeFailureRecord[],
   lastError: null as string | null,
 };
 
@@ -234,6 +279,7 @@ function currentBlockedCapabilities(extra: string[] = []): string[] {
   const blocked = new Set<string>([...fleetLifecycleState.blockedCapabilities, ...extra]);
   if (!FLEET_CONTROL_PLANE.isConfigured()) blocked.add("motto_fleet_control_plane_unconfigured");
   if (fleetLifecycleState.pendingRetries.length > 0) blocked.add("fleet_write_pending_retry");
+  if (fleetLifecycleState.pendingKnowledgeRetries.length > 0) blocked.add("knowledge_store_pending_retry");
   return [...blocked];
 }
 
@@ -275,6 +321,95 @@ function queueFleetRetry(operation: string, correlationId: string, runId: string
   }
   fleetLifecycleState.lastError = record.error;
   persistFleetRetry(record);
+}
+
+function persistKnowledgeRetry(record: KnowledgeFailureRecord) {
+  try {
+    const content = redactSecrets(`Knowledge-store write pending retry for ${record.operation} [${record.correlation_id}]`);
+    const metadata = JSON.stringify(redactMetadata(record));
+    db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
+      [randomUUID(), "capability_gap", content, metadata]);
+    scheduleSave();
+  } catch {
+    // Persistence is best-effort and should not block the call path.
+  }
+}
+
+function queueKnowledgeRetry(operation: string, correlationId: string, runId: string | null, error: unknown) {
+  const record: KnowledgeFailureRecord = {
+    operation,
+    correlation_id: correlationId,
+    run_id: runId,
+    error: redactSecrets(error instanceof Error ? error.message : String(error)),
+    queued_at: nowIso(),
+    status: "pending_retry",
+  };
+  fleetLifecycleState.pendingKnowledgeRetries.push(record);
+  if (fleetLifecycleState.pendingKnowledgeRetries.length > 25) {
+    fleetLifecycleState.pendingKnowledgeRetries.shift();
+  }
+  fleetLifecycleState.lastError = record.error;
+  persistKnowledgeRetry(record);
+}
+
+function shouldSimulateOperationFailure(
+  simulateConfig: SimulateFailuresConfig | undefined,
+  operation: string,
+  section?: string,
+): boolean {
+  const operationMatches = asStringArray(simulateConfig?.fleet_operations).includes(operation);
+  const sectionMatches = typeof section === "string"
+    ? asStringArray(simulateConfig?.fleet_sections).includes(section)
+    : false;
+  return operationMatches || sectionMatches;
+}
+
+function persistCycleKnowledgeRecord(args: {
+  correlationId: string;
+  runId: string | null;
+  objective: string;
+  observedAt: string;
+  status: "ok" | "degraded";
+  consumedInboundIntents: unknown[];
+  signaledIntents: unknown[];
+  queuedLocalTasks: unknown[];
+  capabilityRequests: unknown[];
+  errors: string[];
+  emittedSections: Array<Record<string, unknown>>;
+  simulateFailures?: SimulateFailuresConfig;
+}): { ok: boolean; memoryId?: string; error?: string } {
+  try {
+    if (args.simulateFailures?.knowledge_store) {
+      throw new Error("Simulated knowledge-store write failure");
+    }
+    const memoryId = randomUUID();
+    const metadata = {
+      correlation_id: args.correlationId,
+      run_id: args.runId,
+      objective: args.objective,
+      observed_at: args.observedAt,
+      status: args.status,
+      source: "business_management_cycle",
+      consumed_intent_count: args.consumedInboundIntents.length,
+      signaled_intent_count: args.signaledIntents.length,
+      local_task_count: args.queuedLocalTasks.length,
+      capability_request_count: args.capabilityRequests.length,
+      emitted_sections: args.emittedSections.map((section) => section.section),
+      errors: args.errors,
+    };
+    const content = redactSecrets(`Cycle knowledge persisted for ${args.correlationId} (${args.objective})`);
+    db.run(
+      "INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
+      [memoryId, "validation", content, JSON.stringify(redactMetadata(metadata))],
+    );
+    scheduleSave();
+    return { ok: true, memoryId };
+  } catch (error) {
+    return {
+      ok: false,
+      error: redactSecrets(error instanceof Error ? error.message : String(error)),
+    };
+  }
 }
 
 async function ensureFleetRegistered(): Promise<void> {
@@ -319,16 +454,25 @@ async function ensureFleetStartupLifecycle(): Promise<void> {
   }
 }
 
-function buildStructuredPlan(args: BusinessManagementCycleArgs, correlationId: string, observedAt: string) {
+function buildStructuredPlan(
+  args: BusinessManagementCycleArgs,
+  correlationId: string,
+  observedAt: string,
+  consumedInboundIntents: unknown[],
+) {
   const observations = asArray(args.observations);
   const proposedActions = asArray(args.proposed_actions);
   const capabilityGaps = asArray(args.capability_gaps);
+  const intentIds = consumedInboundIntents
+    .map((intent) => asRecord(intent).intent_id)
+    .filter((intentId): intentId is string => typeof intentId === "string" && intentId.length > 0);
   const planInput = args.plan;
   if (planInput && typeof planInput === "object" && !Array.isArray(planInput)) {
     return {
       ...asRecord(planInput),
       correlation_id: correlationId,
       generated_at: observedAt,
+      inbound_intent_ids: intentIds,
     };
   }
   if (typeof planInput === "string" && planInput.trim().length > 0) {
@@ -337,6 +481,7 @@ function buildStructuredPlan(args: BusinessManagementCycleArgs, correlationId: s
       generated_at: observedAt,
       objective: args.objective,
       narrative: redactSecrets(planInput),
+      inbound_intent_ids: intentIds,
     };
   }
   return {
@@ -344,8 +489,10 @@ function buildStructuredPlan(args: BusinessManagementCycleArgs, correlationId: s
     generated_at: observedAt,
     objective: args.objective,
     summary: "Structured plan synthesized from cycle inputs.",
+    inbound_intent_ids: intentIds,
     next_steps: [
       { step: "Review observations", count: observations.length, priority: "high", status: "ready" },
+      { step: "Process inbound intents", count: intentIds.length, priority: "high", status: intentIds.length > 0 ? "ready" : "none" },
       { step: "Execute proposed actions", count: proposedActions.length, priority: "high", status: "awaiting_approval" },
       { step: "Address capability gaps", count: capabilityGaps.length, priority: "medium", status: "blocked" },
       { step: "Capture learning outcomes", priority: "medium", status: "ready" },
@@ -491,6 +638,35 @@ const tools: Tool[] = [
         plan: { type: "object", description: "Optional structured plan payload. If omitted, Hermes synthesizes one." },
         proposed_actions: { type: "array", items: { type: "object" }, description: "Proposed actions for this cycle." },
         capability_gaps: { type: "array", items: { type: "object" }, description: "Capability blockers and missing prerequisites." },
+        coordination_intents: {
+          type: "array",
+          items: { type: "object" },
+          description: "Cross-agent intents to emit via signal_intent (target_agent, kind, payload?, source_agent?).",
+        },
+        local_tasks: {
+          type: "array",
+          items: { type: "object" },
+          description: "Local/browser/authenticated work requests queued via queue_local_task.",
+        },
+        capability_requests: {
+          type: "array",
+          items: { type: "object" },
+          description: "Missing credential/tool/session requests sent via request_capability.",
+        },
+        consume_intents_limit: {
+          type: "number",
+          description: "Maximum open intents Hermes should consume for this cycle (default 10).",
+          default: 10,
+        },
+        simulate_failures: {
+          type: "object",
+          description: "Validation-only failure simulation. fleet_operations/fleet_sections trigger pending retries; knowledge_store simulates memory write failure.",
+          properties: {
+            fleet_operations: { type: "array", items: { type: "string" } },
+            fleet_sections: { type: "array", items: { type: "string" } },
+            knowledge_store: { type: "boolean" },
+          },
+        },
         validation_evidence: {
           oneOf: [
             { type: "array", items: { type: "object" } },
@@ -737,6 +913,10 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
 
   const correlationId = normalizeCorrelationId(args.correlation_id);
   const observedAt = nowIso();
+  const simulateFailuresRaw = asRecord(args.simulate_failures);
+  const simulateFailures = Object.keys(simulateFailuresRaw).length > 0
+    ? (simulateFailuresRaw as SimulateFailuresConfig)
+    : undefined;
   fleetLifecycleState.pendingApprovals = asNonNegativeInt(args.pending_approvals, 0);
   fleetLifecycleState.blockedCapabilities = asStringArray(args.blocked_capabilities);
 
@@ -760,14 +940,24 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     };
   }
 
+  const cycleErrors: string[] = [];
+  const consumedInboundIntents: Array<Record<string, unknown>> = [];
+  const signaledIntents: Array<Record<string, unknown>> = [];
+  const queuedLocalTasks: Array<Record<string, unknown>> = [];
+  const filedCapabilityRequests: Array<Record<string, unknown>> = [];
+
   try {
     await sendFleetHeartbeat("cycle_start", objective);
   } catch (error) {
     queueFleetRetry("heartbeat_cycle_start", correlationId, null, error);
+    cycleErrors.push("heartbeat_cycle_start failed");
   }
 
   let runId: string | null = null;
   try {
+    if (shouldSimulateOperationFailure(simulateFailures, "record_run_start")) {
+      throw new Error("Simulated fleet run-start failure");
+    }
     const runStart = await FLEET_CONTROL_PLANE.recordRunStart({
       agent_name: FLEET_AGENT_NAME,
       kind: "business-management-cycle",
@@ -783,14 +973,196 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     };
   }
 
-  const plan = buildStructuredPlan(args, correlationId, observedAt);
+  const consumeIntentsLimit = Math.max(1, asNonNegativeInt(args.consume_intents_limit, 10));
+  try {
+    if (shouldSimulateOperationFailure(simulateFailures, "consume_open_intents", "inbound_intents")) {
+      throw new Error("Simulated intent-consume failure");
+    }
+    const consumed = await FLEET_CONTROL_PLANE.consumeOpenIntents(FLEET_AGENT_NAME, consumeIntentsLimit);
+    consumedInboundIntents.push(...asArray(consumed).map((intent) => asRecord(intent)));
+  } catch (error) {
+    cycleErrors.push("consume_open_intents failed");
+    queueFleetRetry("consume_open_intents", correlationId, runId, error);
+  }
+
+  const coordinationIntentRequests = asArray(args.coordination_intents);
+  for (let index = 0; index < coordinationIntentRequests.length; index += 1) {
+    const intentReq = asRecord(coordinationIntentRequests[index]);
+    const targetAgent = typeof intentReq.target_agent === "string" ? intentReq.target_agent.trim() : "";
+    const kind = typeof intentReq.kind === "string" ? intentReq.kind.trim() : "";
+    if (!targetAgent || !kind) {
+      cycleErrors.push(`coordination_intents[${index}] missing target_agent or kind`);
+      continue;
+    }
+    const sourceAgent = typeof intentReq.source_agent === "string" && intentReq.source_agent.trim().length > 0
+      ? intentReq.source_agent.trim()
+      : FLEET_AGENT_NAME;
+    const payload = {
+      ...asRecord(intentReq.payload),
+      correlation_id: correlationId,
+      run_id: runId,
+      objective,
+      requested_at: observedAt,
+    };
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "signal_intent", "coordination_intents")) {
+        throw new Error("Simulated signal_intent failure");
+      }
+      const result = asRecord(await FLEET_CONTROL_PLANE.signalIntent({
+        target_agent: targetAgent,
+        kind,
+        payload,
+        source_agent: sourceAgent,
+      }));
+      signaledIntents.push({
+        intent_id: result.intent_id ?? null,
+        target_agent: targetAgent,
+        kind,
+        source_agent: sourceAgent,
+      });
+    } catch (error) {
+      cycleErrors.push(`signal_intent failed for coordination_intents[${index}]`);
+      queueFleetRetry("signal_intent", correlationId, runId, error);
+    }
+  }
+
+  const localTaskRequests = asArray(args.local_tasks);
+  for (let index = 0; index < localTaskRequests.length; index += 1) {
+    const taskReq = asRecord(localTaskRequests[index]);
+    const kind = typeof taskReq.kind === "string" ? taskReq.kind.trim() : "";
+    if (!kind) {
+      cycleErrors.push(`local_tasks[${index}] missing kind`);
+      continue;
+    }
+    const payload = {
+      ...asRecord(taskReq.payload),
+      correlation_id: correlationId,
+      run_id: runId,
+      objective,
+      queued_at: observedAt,
+    };
+    const source = typeof taskReq.source === "string" && taskReq.source.trim().length > 0
+      ? taskReq.source.trim()
+      : FLEET_AGENT_NAME;
+    const description = typeof taskReq.description === "string" && taskReq.description.trim().length > 0
+      ? taskReq.description
+      : `Local/browser task for ${objective} [${correlationId}]`;
+    const dedupKey = typeof taskReq.dedup_key === "string" && taskReq.dedup_key.trim().length > 0
+      ? taskReq.dedup_key
+      : `${correlationId}:local:${index}:${kind}`;
+    const ttlSeconds = Math.max(60, asNonNegativeInt(taskReq.ttl_seconds, 600));
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "local_tasks")) {
+        throw new Error("Simulated queue_local_task failure");
+      }
+      const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
+        kind,
+        payload,
+        description,
+        source,
+        dedup_key: dedupKey,
+        ttl_seconds: ttlSeconds,
+      }));
+      queuedLocalTasks.push({
+        task_id: queued.task_id ?? queued.id ?? queued.local_task_id ?? null,
+        kind,
+        source,
+        status: queued.status ?? queued.state ?? null,
+      });
+    } catch (error) {
+      cycleErrors.push(`queue_local_task failed for local_tasks[${index}]`);
+      queueFleetRetry("queue_local_task", correlationId, runId, error);
+    }
+  }
+
+  const capabilityRequests = asArray(args.capability_requests);
+  for (let index = 0; index < capabilityRequests.length; index += 1) {
+    const req = asRecord(capabilityRequests[index]);
+    const capability = typeof req.capability === "string" ? req.capability.trim() : "";
+    const justificationRaw = typeof req.justification === "string" ? req.justification.trim() : "";
+    if (!capability || !justificationRaw) {
+      cycleErrors.push(`capability_requests[${index}] missing capability or justification`);
+      continue;
+    }
+    const requestedBy = typeof req.requested_by === "string" && req.requested_by.trim().length > 0
+      ? req.requested_by.trim()
+      : FLEET_AGENT_NAME;
+    const justification = justificationRaw.includes(correlationId)
+      ? justificationRaw
+      : `[${correlationId}] ${justificationRaw}`;
+    const repo = typeof req.repo === "string" ? req.repo : undefined;
+    const moveId = typeof req.move_id === "number" && Number.isFinite(req.move_id)
+      ? Math.trunc(req.move_id)
+      : undefined;
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "request_capability", "capability_requests")) {
+        throw new Error("Simulated request_capability failure");
+      }
+      const result = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
+        capability,
+        justification,
+        requested_by: requestedBy,
+        repo,
+        move_id: moveId,
+      }));
+      filedCapabilityRequests.push({
+        capability,
+        request_id: result.id ?? result.request_id ?? null,
+        status: result.status ?? "pending",
+        requested_by: requestedBy,
+      });
+    } catch (error) {
+      cycleErrors.push(`request_capability failed for capability_requests[${index}]`);
+      queueFleetRetry("request_capability", correlationId, runId, error);
+    }
+  }
+
   const observations = asArray(args.observations);
   const proposedActions = asArray(args.proposed_actions);
+  if (proposedActions.length === 0 && consumedInboundIntents.length > 0) {
+    for (const intent of consumedInboundIntents) {
+      proposedActions.push({
+        action: "triage_inbound_intent",
+        intent_id: asRecord(intent).intent_id ?? null,
+        correlation_id: correlationId,
+        status: "ready",
+      });
+    }
+  }
+  const plan = buildStructuredPlan(args, correlationId, observedAt, consumedInboundIntents);
   const capabilityGaps = asArray(args.capability_gaps);
   const validationEvidence = validationEvidenceEntries(args.validation_evidence);
   const learnings = asArray(args.learnings);
 
   const sectionPayloads: Array<{ section: string; event_kind: string; artifact_kind: string; data: unknown; level?: string }> = [
+    {
+      section: "inbound_intents",
+      event_kind: "cycle.inbound_intents",
+      artifact_kind: "business_inbound_intents",
+      data: {
+        consumed_count: consumedInboundIntents.length,
+        intents: consumedInboundIntents,
+      },
+    },
+    {
+      section: "coordination_intents",
+      event_kind: "cycle.coordination_intents",
+      artifact_kind: "business_coordination_intents",
+      data: signaledIntents,
+    },
+    {
+      section: "local_tasks",
+      event_kind: "cycle.local_tasks",
+      artifact_kind: "business_local_tasks",
+      data: queuedLocalTasks,
+    },
+    {
+      section: "capability_requests",
+      event_kind: "cycle.capability_requests",
+      artifact_kind: "business_capability_requests",
+      data: filedCapabilityRequests,
+      level: "warn",
+    },
     { section: "observations", event_kind: "cycle.observations", artifact_kind: "business_observations", data: observations },
     { section: "plan", event_kind: "cycle.plan", artifact_kind: "business_plan", data: plan },
     { section: "proposed_actions", event_kind: "cycle.proposed_actions", artifact_kind: "business_proposed_actions", data: proposedActions },
@@ -800,7 +1172,6 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   ];
 
   const emittedSections: Array<Record<string, unknown>> = [];
-  const cycleErrors: string[] = [];
 
   for (const section of sectionPayloads) {
     const eventPayload = {
@@ -814,6 +1185,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
 
     let eventId: number | null = null;
     try {
+      if (shouldSimulateOperationFailure(simulateFailures, "record_event", section.section)) {
+        throw new Error(`Simulated record_event failure for ${section.section}`);
+      }
       const eventRes = await FLEET_CONTROL_PLANE.recordEvent({
         agent_name: FLEET_AGENT_NAME,
         kind: section.event_kind,
@@ -832,6 +1206,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     let artifactId: number | null = null;
     const artifactBody = JSON.stringify(eventPayload, null, 2);
     try {
+      if (shouldSimulateOperationFailure(simulateFailures, "record_artifact_content", section.section)) {
+        throw new Error(`Simulated record_artifact_content failure for ${section.section}`);
+      }
       const artifactRes = await FLEET_CONTROL_PLANE.recordArtifactContent({
         agent_name: FLEET_AGENT_NAME,
         kind: section.artifact_kind,
@@ -864,16 +1241,48 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     });
   }
 
+  let knowledgeRecordId: string | null = null;
+  const knowledgeWrite = persistCycleKnowledgeRecord({
+    correlationId,
+    runId,
+    objective,
+    observedAt,
+    status: cycleErrors.length === 0 ? "ok" : "degraded",
+    consumedInboundIntents,
+    signaledIntents,
+    queuedLocalTasks,
+    capabilityRequests: filedCapabilityRequests,
+    errors: cycleErrors,
+    emittedSections,
+    simulateFailures,
+  });
+  if (knowledgeWrite.ok && knowledgeWrite.memoryId) {
+    knowledgeRecordId = knowledgeWrite.memoryId;
+  } else {
+    cycleErrors.push("knowledge_store_write failed");
+    queueKnowledgeRetry("cycle_knowledge_write", correlationId, runId, knowledgeWrite.error ?? "unknown knowledge-store failure");
+  }
+
   const businessPmOutput = {
     correlation_id: correlationId,
     run_id: runId,
     objective,
     generated_at: observedAt,
     event_artifact_map: emittedSections,
+    inbound_intents_consumed: consumedInboundIntents,
+    intents_signaled: signaledIntents,
+    local_tasks_queued: queuedLocalTasks,
+    capability_requests_filed: filedCapabilityRequests,
+    knowledge_record_id: knowledgeRecordId,
     pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+    pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
+      .filter((retry) => retry.correlation_id === correlationId),
   };
 
   try {
+    if (shouldSimulateOperationFailure(simulateFailures, "record_artifact_content", "business_pm_output")) {
+      throw new Error("Simulated record_artifact_content failure for business_pm_output");
+    }
     const pmOutputRes = await FLEET_CONTROL_PLANE.recordArtifactContent({
       agent_name: FLEET_AGENT_NAME,
       kind: "business_pm_output",
@@ -908,6 +1317,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
         emitted_sections: emittedSections,
         errors: cycleErrors,
         pending_retry_count: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId).length,
+        pending_knowledge_retry_count: fleetLifecycleState.pendingKnowledgeRetries
+          .filter((retry) => retry.correlation_id === correlationId).length,
+        knowledge_record_id: knowledgeRecordId,
       },
     });
   } catch (error) {
@@ -927,6 +1339,13 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     run_id: runId,
     emitted_sections: emittedSections,
     errors: cycleErrors,
+    inbound_intents_consumed: consumedInboundIntents,
+    intents_signaled: signaledIntents,
+    local_tasks_queued: queuedLocalTasks,
+    capability_requests_filed: filedCapabilityRequests,
+    knowledge_record_id: knowledgeRecordId,
+    pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+    pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries.filter((retry) => retry.correlation_id === correlationId),
     heartbeat: buildHeartbeatStatus(finalStatus === "success" ? "idle" : "degraded", objective),
   };
 

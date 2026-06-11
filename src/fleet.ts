@@ -24,17 +24,23 @@ interface RpcEnvelope {
   error?: RpcErrorShape;
 }
 
+const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "[::1]";
+}
+
 function normalizeBaseUrl(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
 
   try {
     const url = new URL(trimmed);
-    const hostname = url.hostname.toLowerCase();
-    const isLoopback = hostname === "localhost"
-      || hostname === "127.0.0.1"
-      || hostname === "::1"
-      || hostname === "[::1]";
+    const isLoopback = isLoopbackHost(url.hostname);
     if (!isLoopback && url.protocol === "http:") {
       url.protocol = "https:";
     }
@@ -52,6 +58,23 @@ function normalizeBaseUrl(raw: string): string | null {
     const withoutTrailingSlash = trimmed.replace(/\/+$/, "");
     if (withoutTrailingSlash.endsWith("/mcp")) return withoutTrailingSlash;
     return `${withoutTrailingSlash}/mcp`;
+  }
+}
+
+function resolveRedirectUrl(currentUrl: string, location: string): string {
+  try {
+    const nextUrl = new URL(location, currentUrl);
+    if (!isLoopbackHost(nextUrl.hostname) && nextUrl.protocol === "http:") {
+      nextUrl.protocol = "https:";
+    }
+    return nextUrl.toString();
+  } catch {
+    if (location.startsWith("http://") || location.startsWith("https://")) {
+      return location;
+    }
+    return location.startsWith("/")
+      ? `${currentUrl.replace(/\/+$/, "")}${location}`
+      : `${currentUrl.replace(/\/+$/, "")}/${location}`;
   }
 }
 
@@ -203,33 +226,49 @@ export class FleetClient {
     }
 
     try {
-      const response = await fetch(this.endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      let requestUrl = this.endpoint;
+      let redirects = 0;
 
-      const raw = await response.text();
-      if (!response.ok) {
-        throw new Error(`Fleet MCP HTTP ${response.status}: ${redactSecrets(raw.slice(0, 500))}`);
+      while (true) {
+        const response = await fetch(requestUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+          redirect: "manual",
+        });
+
+        const location = response.headers.get("location");
+        if (REDIRECT_STATUS_CODES.has(response.status) && typeof location === "string" && location.trim().length > 0) {
+          redirects += 1;
+          if (redirects > 5) {
+            throw new Error(`Fleet MCP redirect limit exceeded for ${method}.`);
+          }
+          requestUrl = resolveRedirectUrl(requestUrl, location.trim());
+          continue;
+        }
+
+        const raw = await response.text();
+        if (!response.ok) {
+          throw new Error(`Fleet MCP HTTP ${response.status}: ${redactSecrets(raw.slice(0, 500))}`);
+        }
+
+        const responseSessionId = response.headers.get("mcp-session-id")?.trim()
+          ?? response.headers.get("Mcp-Session-Id")?.trim()
+          ?? null;
+
+        if (!raw.trim()) {
+          return { result: null, sessionId: responseSessionId };
+        }
+
+        const envelope = parseRpcEnvelope(raw);
+        if (envelope.error) {
+          const err = envelope.error;
+          const message = redactSecrets(String(err.message ?? "unknown fleet error"));
+          throw new Error(`Fleet MCP RPC error (${err.code ?? "unknown"}): ${message}`);
+        }
+        return { result: envelope.result, sessionId: responseSessionId };
       }
-
-      const responseSessionId = response.headers.get("mcp-session-id")?.trim()
-        ?? response.headers.get("Mcp-Session-Id")?.trim()
-        ?? null;
-
-      if (!raw.trim()) {
-        return { result: null, sessionId: responseSessionId };
-      }
-
-      const envelope = parseRpcEnvelope(raw);
-      if (envelope.error) {
-        const err = envelope.error;
-        const message = redactSecrets(String(err.message ?? "unknown fleet error"));
-        throw new Error(`Fleet MCP RPC error (${err.code ?? "unknown"}): ${message}`);
-      }
-      return { result: envelope.result, sessionId: responseSessionId };
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
         throw new Error(`Fleet MCP request timed out after ${this.requestTimeoutMs}ms.`);
@@ -390,5 +429,47 @@ export class FleetClient {
 
   async getRun(runId: string) {
     return this.callTool<Record<string, unknown>>("get_run", { run_id: runId });
+  }
+
+  async signalIntent(args: {
+    target_agent: string;
+    kind: string;
+    payload?: Record<string, unknown>;
+    source_agent?: string;
+  }) {
+    return this.callTool<Record<string, unknown>>("signal_intent", args as unknown as Record<string, unknown>);
+  }
+
+  async consumeOpenIntents(agentName: string, limit = 10) {
+    const raw = await this.callTool<unknown>("consume_open_intents", {
+      agent_name: agentName,
+      limit,
+    });
+    if (Array.isArray(raw)) {
+      return raw.map((entry) => asRecord(entry));
+    }
+    const nested = asArray(asRecord(raw).result);
+    return nested.map((entry) => asRecord(entry));
+  }
+
+  async queueLocalTask(args: {
+    kind: string;
+    payload: Record<string, unknown>;
+    description?: string;
+    source?: string;
+    dedup_key?: string;
+    ttl_seconds?: number;
+  }) {
+    return this.callTool<Record<string, unknown>>("queue_local_task", args as unknown as Record<string, unknown>);
+  }
+
+  async requestCapability(args: {
+    capability: string;
+    justification: string;
+    requested_by?: string;
+    repo?: string;
+    move_id?: number;
+  }) {
+    return this.callTool<Record<string, unknown>>("request_capability", args as unknown as Record<string, unknown>);
   }
 }
