@@ -463,6 +463,23 @@ export class FleetClient {
     return this.callTool<Record<string, unknown>>("queue_local_task", args as unknown as Record<string, unknown>);
   }
 
+  async getLocalTask(taskId: string) {
+    return this.callTool<Record<string, unknown> | null>("get_local_task", { task_id: taskId });
+  }
+
+  async listLocalTasks(args: { status?: string; kind?: string; limit?: number } = {}) {
+    const payload: Record<string, unknown> = {};
+    if (typeof args.status === "string") payload.status = args.status;
+    if (typeof args.kind === "string") payload.kind = args.kind;
+    if (typeof args.limit === "number" && Number.isFinite(args.limit)) {
+      payload.limit = Math.max(1, Math.trunc(args.limit));
+    }
+    const raw = await this.callTool<unknown>("list_local_tasks", payload);
+    if (Array.isArray(raw)) return raw;
+    const nested = asArray(asRecord(raw).result);
+    return nested;
+  }
+
   async requestCapability(args: {
     capability: string;
     justification: string;

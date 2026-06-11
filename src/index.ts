@@ -5,7 +5,9 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import initSqlJs from "sql.js";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RISK_METADATA, evaluateToolPolicy, type RiskMetadata } from "./policy.js";
@@ -75,6 +77,8 @@ const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
 const FLEET_AGENT_NAME = process.env.HERMES_FLEET_AGENT_NAME?.trim() || "hermes";
 const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "managed";
+const MOTTO_SKILLS_TOOLS_DIR = process.env.MOTTO_SKILLS_TOOLS_DIR?.trim() || "/root/motto-skills/tools";
+const MOTTO_KNOWLEDGE_DIR = process.env.MOTTO_KNOWLEDGE_DIR?.trim() || join(homedir(), ".factory", "knowledge");
 const FLEET_CONTROL_PLANE = new FleetClient({
   baseUrl: process.env.MOTTO_MCP_URL ?? "",
   authToken: process.env.MOTTO_MCP_AUTH_TOKEN ?? "",
@@ -232,6 +236,9 @@ interface BusinessManagementCycleArgs {
   learnings?: unknown[];
   pending_approvals?: number;
   blocked_capabilities?: unknown[];
+  ingest_completed_local_tasks?: boolean;
+  local_task_ingest_limit?: number;
+  recall_bridged_limit?: number;
 }
 
 const fleetLifecycleState = {
@@ -246,6 +253,136 @@ const fleetLifecycleState = {
 };
 
 let fleetRegistrationPromise: Promise<void> | null = null;
+
+type TypedMemoryCategory =
+  | "fact"
+  | "decision"
+  | "project"
+  | "learning"
+  | "workflow"
+  | "observation"
+  | "capability_gap"
+  | "approval_request"
+  | "validation";
+
+type ConfidenceLevel = "high" | "medium" | "low";
+
+const TYPED_MEMORY_CATEGORIES = new Set<TypedMemoryCategory>([
+  "fact",
+  "decision",
+  "project",
+  "learning",
+  "workflow",
+  "observation",
+  "capability_gap",
+  "approval_request",
+  "validation",
+]);
+
+const MEMORY_CATEGORY_ALIASES: Record<string, TypedMemoryCategory> = {
+  fact: "fact",
+  decision: "decision",
+  project: "project",
+  learning: "learning",
+  workflow: "workflow",
+  observation: "observation",
+  capability_gap: "capability_gap",
+  approval_request: "approval_request",
+  validation: "validation",
+  plan: "project",
+  deployment: "decision",
+};
+
+interface TraceabilityOptions {
+  source: string;
+  correlationId?: string;
+  runId?: string | null;
+  taskId?: string | null;
+  timestamp?: string;
+  confidence?: unknown;
+}
+
+interface StoredMemoryRecord {
+  id: string;
+  category: TypedMemoryCategory;
+  metadata: Record<string, unknown>;
+}
+
+function normalizeMemoryCategory(raw: unknown, fallback: TypedMemoryCategory = "observation"): TypedMemoryCategory {
+  if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
+  const normalized = raw.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  if (normalized in MEMORY_CATEGORY_ALIASES) {
+    return MEMORY_CATEGORY_ALIASES[normalized];
+  }
+  if (TYPED_MEMORY_CATEGORIES.has(normalized as TypedMemoryCategory)) {
+    return normalized as TypedMemoryCategory;
+  }
+  return fallback;
+}
+
+function normalizeConfidence(raw: unknown, fallback: ConfidenceLevel = "medium"): ConfidenceLevel {
+  if (typeof raw !== "string") return fallback;
+  const value = raw.trim().toLowerCase();
+  if (value === "high" || value === "medium" || value === "low") return value;
+  return fallback;
+}
+
+function parseMetadata(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fall through
+  }
+  return {};
+}
+
+function buildTraceabilityMetadata(input: unknown, opts: TraceabilityOptions): Record<string, unknown> {
+  const incoming = parseMetadata(input);
+  const source = typeof incoming.source === "string" && incoming.source.trim().length > 0
+    ? incoming.source
+    : opts.source;
+  const timestamp = typeof incoming.timestamp === "string" && incoming.timestamp.trim().length > 0
+    ? incoming.timestamp
+    : (opts.timestamp ?? nowIso());
+  const confidence = normalizeConfidence(incoming.confidence ?? opts.confidence, "medium");
+  const base: Record<string, unknown> = {
+    ...incoming,
+    source,
+    timestamp,
+    confidence,
+  };
+  if (opts.correlationId) base.correlation_id = opts.correlationId;
+  if (opts.runId) base.run_id = opts.runId;
+  if (opts.taskId) {
+    base.task_id = opts.taskId;
+    base.local_task_id = opts.taskId;
+  }
+  return redactMetadata(base) as Record<string, unknown>;
+}
+
+function storeTypedMemoryRecord(args: {
+  category: unknown;
+  content: string;
+  metadata?: unknown;
+  fallbackCategory?: TypedMemoryCategory;
+  trace: TraceabilityOptions;
+}): StoredMemoryRecord {
+  const id = randomUUID();
+  const category = normalizeMemoryCategory(args.category, args.fallbackCategory ?? "observation");
+  const metadata = buildTraceabilityMetadata(args.metadata, args.trace);
+  db.run(
+    "INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
+    [id, category, redactSecrets(args.content), JSON.stringify(metadata)],
+  );
+  scheduleSave();
+  return { id, category, metadata };
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -275,6 +412,162 @@ function asNonNegativeInt(value: unknown, fallback: number): number {
   return Math.max(0, Math.trunc(value));
 }
 
+function asBool(value: unknown, fallback = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "y"].includes(normalized)) return true;
+    if (["0", "false", "no", "n"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function asOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+type BridgeStoreType = "workflow-library" | "decision-log" | "knowledge-distiller";
+
+interface BridgeResult {
+  store_type: BridgeStoreType;
+  record_id: string;
+  store_path: string;
+  action: string;
+  correlation_id: string;
+  run_id: string | null;
+  memory_id: string;
+  category: TypedMemoryCategory;
+}
+
+interface LocalTaskOutcome {
+  task_id: string;
+  kind: string;
+  status: string;
+  source: string;
+  finished_at: string | null;
+  correlation_id: string | null;
+  run_id: string | null;
+  memory_id: string;
+  memory_category: TypedMemoryCategory;
+}
+
+function bridgeStorePath(storeType: BridgeStoreType, recordId: string): string {
+  switch (storeType) {
+    case "workflow-library":
+      return `${MOTTO_KNOWLEDGE_DIR}/workflows.json#${recordId}`;
+    case "decision-log":
+      return `${MOTTO_KNOWLEDGE_DIR}/decisions.jsonl#${recordId}`;
+    default:
+      return `${MOTTO_KNOWLEDGE_DIR}/facts.json#${recordId}`;
+  }
+}
+
+function executeMottoSkillsTool(scriptName: string, command: string, payload: Record<string, unknown>): Record<string, unknown> {
+  const scriptPath = join(MOTTO_SKILLS_TOOLS_DIR, scriptName);
+  if (!existsSync(scriptPath)) {
+    throw new Error(`motto-skills tool missing: ${scriptPath}`);
+  }
+  const proc = spawnSync(
+    "python3",
+    [scriptPath, command, JSON.stringify(redactMetadata(payload))],
+    {
+      encoding: "utf8",
+      timeout: 20000,
+      env: {
+        ...process.env,
+        MOTTO_KNOWLEDGE_DIR,
+      },
+    },
+  );
+  if (proc.error) {
+    throw new Error(`motto-skills ${scriptName} failed: ${proc.error.message}`);
+  }
+  if (typeof proc.status === "number" && proc.status !== 0) {
+    throw new Error(`motto-skills ${scriptName} exit ${proc.status}: ${redactSecrets((proc.stderr ?? "").trim())}`);
+  }
+  const stdout = (proc.stdout ?? "").trim();
+  if (!stdout) return {};
+  try {
+    const parsed = JSON.parse(stdout);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    throw new Error(`motto-skills ${scriptName} returned non-JSON output`);
+  }
+}
+
+function memoryAlreadyIngestedForTask(taskId: string): boolean {
+  const stmt = db.prepare("SELECT id FROM memories WHERE metadata LIKE ? LIMIT 1");
+  stmt.bind([`%\"local_task_id\":\"${taskId}\"%`]);
+  const found = stmt.step();
+  stmt.free();
+  return found;
+}
+
+function recentBridgeReferences(limit: number): Array<Record<string, unknown>> {
+  const stmt = db.prepare(
+    "SELECT id, category, metadata, created_at FROM memories WHERE metadata LIKE ? ORDER BY created_at DESC LIMIT ?",
+  );
+  stmt.bind(["%\"bridge_store_type\"%", Math.max(1, Math.trunc(limit))]);
+  const out: Array<Record<string, unknown>> = [];
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as Record<string, unknown>;
+    const metadata = parseMetadata(row.metadata);
+    const storeType = asOptionalString(metadata.bridge_store_type);
+    const recordId = asOptionalString(metadata.bridge_record_id);
+    const storePath = asOptionalString(metadata.bridge_store_path);
+    if (!storeType || !recordId || !storePath) continue;
+    out.push({
+      memory_id: row.id ?? null,
+      category: row.category ?? null,
+      bridge_store_type: storeType,
+      bridge_record_id: recordId,
+      bridge_store_path: storePath,
+      bridge_status: metadata.bridge_status ?? "bridged",
+      source: metadata.source ?? null,
+      timestamp: metadata.timestamp ?? row.created_at ?? null,
+      confidence: metadata.confidence ?? null,
+      correlation_id: metadata.correlation_id ?? null,
+      run_id: metadata.run_id ?? null,
+    });
+  }
+  stmt.free();
+  return out;
+}
+
+function restoreLearningStateFromMemory() {
+  try {
+    const stmt = db.prepare(
+      "SELECT category, metadata, created_at FROM memories ORDER BY created_at DESC LIMIT 50",
+    );
+    const blocked = new Set<string>(fleetLifecycleState.blockedCapabilities);
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      const metadata = parseMetadata(row.metadata);
+      if (!fleetLifecycleState.lastLearnCycle) {
+        const ts = asOptionalString(metadata.timestamp)
+          ?? asOptionalString(metadata.observed_at)
+          ?? asOptionalString(row.created_at);
+        if (ts) fleetLifecycleState.lastLearnCycle = ts;
+      }
+      if (row.category === "capability_gap") {
+        const status = asOptionalString(metadata.status);
+        if (status === "pending_retry") {
+          const operation = asOptionalString(metadata.operation);
+          if (operation) blocked.add("knowledge_store_pending_retry");
+        }
+      }
+    }
+    stmt.free();
+    fleetLifecycleState.blockedCapabilities = [...blocked];
+  } catch {
+    // Recovery is best-effort.
+  }
+}
+
 function currentBlockedCapabilities(extra: string[] = []): string[] {
   const blocked = new Set<string>([...fleetLifecycleState.blockedCapabilities, ...extra]);
   if (!FLEET_CONTROL_PLANE.isConfigured()) blocked.add("motto_fleet_control_plane_unconfigured");
@@ -296,11 +589,21 @@ function buildHeartbeatStatus(mode: string, currentProcessFocus: string): FleetH
 
 function persistFleetRetry(record: FleetFailureRecord) {
   try {
-    const content = redactSecrets(`Fleet write pending retry for ${record.operation} [${record.correlation_id}]`);
-    const metadata = JSON.stringify(redactMetadata(record));
-    db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-      [randomUUID(), "capability_gap", content, metadata]);
-    scheduleSave();
+    storeTypedMemoryRecord({
+      category: "capability_gap",
+      content: `Fleet write pending retry for ${record.operation} [${record.correlation_id}]`,
+      metadata: {
+        ...record,
+        failure_surface: "fleet",
+      },
+      trace: {
+        source: "fleet_retry_queue",
+        correlationId: record.correlation_id,
+        runId: record.run_id,
+        timestamp: record.queued_at,
+        confidence: "high",
+      },
+    });
   } catch {
     // Persistence is best-effort and should not block the call path.
   }
@@ -325,11 +628,21 @@ function queueFleetRetry(operation: string, correlationId: string, runId: string
 
 function persistKnowledgeRetry(record: KnowledgeFailureRecord) {
   try {
-    const content = redactSecrets(`Knowledge-store write pending retry for ${record.operation} [${record.correlation_id}]`);
-    const metadata = JSON.stringify(redactMetadata(record));
-    db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-      [randomUUID(), "capability_gap", content, metadata]);
-    scheduleSave();
+    storeTypedMemoryRecord({
+      category: "capability_gap",
+      content: `Knowledge-store write pending retry for ${record.operation} [${record.correlation_id}]`,
+      metadata: {
+        ...record,
+        failure_surface: "knowledge_store",
+      },
+      trace: {
+        source: "knowledge_retry_queue",
+        correlationId: record.correlation_id,
+        runId: record.run_id,
+        timestamp: record.queued_at,
+        confidence: "high",
+      },
+    });
   } catch {
     // Persistence is best-effort and should not block the call path.
   }
@@ -373,7 +686,10 @@ function persistCycleKnowledgeRecord(args: {
   consumedInboundIntents: unknown[];
   signaledIntents: unknown[];
   queuedLocalTasks: unknown[];
+  ingestedLocalTaskOutcomes: unknown[];
   capabilityRequests: unknown[];
+  learningMemoryRecords: unknown[];
+  mottoSkillsBridges: unknown[];
   errors: string[];
   emittedSections: Array<Record<string, unknown>>;
   simulateFailures?: SimulateFailuresConfig;
@@ -382,7 +698,6 @@ function persistCycleKnowledgeRecord(args: {
     if (args.simulateFailures?.knowledge_store) {
       throw new Error("Simulated knowledge-store write failure");
     }
-    const memoryId = randomUUID();
     const metadata = {
       correlation_id: args.correlationId,
       run_id: args.runId,
@@ -393,23 +708,276 @@ function persistCycleKnowledgeRecord(args: {
       consumed_intent_count: args.consumedInboundIntents.length,
       signaled_intent_count: args.signaledIntents.length,
       local_task_count: args.queuedLocalTasks.length,
+      local_task_outcome_count: args.ingestedLocalTaskOutcomes.length,
       capability_request_count: args.capabilityRequests.length,
+      learning_memory_count: args.learningMemoryRecords.length,
+      motto_skills_bridge_count: args.mottoSkillsBridges.length,
       emitted_sections: args.emittedSections.map((section) => section.section),
       errors: args.errors,
     };
-    const content = redactSecrets(`Cycle knowledge persisted for ${args.correlationId} (${args.objective})`);
-    db.run(
-      "INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-      [memoryId, "validation", content, JSON.stringify(redactMetadata(metadata))],
-    );
-    scheduleSave();
-    return { ok: true, memoryId };
+    const stored = storeTypedMemoryRecord({
+      category: "validation",
+      content: `Cycle knowledge persisted for ${args.correlationId} (${args.objective})`,
+      metadata,
+      trace: {
+        source: "business_management_cycle",
+        correlationId: args.correlationId,
+        runId: args.runId,
+        timestamp: args.observedAt,
+        confidence: args.status === "ok" ? "high" : "medium",
+      },
+    });
+    return { ok: true, memoryId: stored.id };
   } catch (error) {
     return {
       ok: false,
       error: redactSecrets(error instanceof Error ? error.message : String(error)),
     };
   }
+}
+
+interface NormalizedLearning {
+  index: number;
+  category: TypedMemoryCategory;
+  content: string;
+  metadata: Record<string, unknown>;
+  repeated: boolean;
+  material: boolean;
+  bridgeStoreHint: BridgeStoreType | null;
+}
+
+function parseRepeatCount(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.trunc(value));
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+  }
+  return 0;
+}
+
+function inferBridgeStoreHint(value: unknown): BridgeStoreType | null {
+  const normalized = asOptionalString(value)?.toLowerCase() ?? null;
+  if (!normalized) return null;
+  if (["workflow", "workflow-library", "workflow_library"].includes(normalized)) return "workflow-library";
+  if (["decision", "decision-log", "decision_log"].includes(normalized)) return "decision-log";
+  if (["knowledge", "knowledge-distiller", "knowledge_distiller", "fact", "facts"].includes(normalized)) return "knowledge-distiller";
+  return null;
+}
+
+function normalizeLearningEntries(
+  rawLearnings: unknown[],
+  correlationId: string,
+  runId: string | null,
+  observedAt: string,
+): NormalizedLearning[] {
+  const out: NormalizedLearning[] = [];
+  for (let index = 0; index < rawLearnings.length; index += 1) {
+    const source = asRecord(rawLearnings[index]);
+    const content = asOptionalString(source.content)
+      ?? asOptionalString(source.summary)
+      ?? asOptionalString(source.learning)
+      ?? asOptionalString(source.note)
+      ?? "";
+    if (!content) continue;
+    const category = normalizeMemoryCategory(source.category ?? source.type, "learning");
+    const repeated = asBool(source.repeated ?? source.is_repeated, false)
+      || parseRepeatCount(source.repeat_count ?? source.repetition_count) >= 2;
+    const material = asBool(source.material ?? source.is_material, false)
+      || ["high", "critical", "p0", "p1"].includes((asOptionalString(source.priority) ?? "").toLowerCase())
+      || ["high", "critical", "material"].includes((asOptionalString(source.impact) ?? "").toLowerCase());
+    const metadata = buildTraceabilityMetadata(
+      {
+        ...source,
+        repeated,
+        material,
+        observed_at: observedAt,
+      },
+      {
+        source: asOptionalString(source.source) ?? "business_management_cycle_learning",
+        correlationId,
+        runId,
+        timestamp: observedAt,
+        confidence: source.confidence,
+      },
+    );
+    out.push({
+      index,
+      category,
+      content,
+      metadata,
+      repeated,
+      material,
+      bridgeStoreHint: inferBridgeStoreHint(source.bridge_store ?? source.bridge_target),
+    });
+  }
+  return out;
+}
+
+function resolveBridgeStore(learning: NormalizedLearning): BridgeStoreType {
+  if (learning.bridgeStoreHint) return learning.bridgeStoreHint;
+  if (learning.category === "workflow") return "workflow-library";
+  if (learning.category === "decision" || learning.category === "approval_request") return "decision-log";
+  return "knowledge-distiller";
+}
+
+function bridgeLearningToMottoSkills(
+  learning: NormalizedLearning,
+  correlationId: string,
+  runId: string | null,
+  memoryId: string,
+): BridgeResult {
+  const storeType = resolveBridgeStore(learning);
+  const metadata = learning.metadata;
+  let result: Record<string, unknown>;
+  if (storeType === "workflow-library") {
+    const workflowName = asOptionalString(metadata.workflow_name)
+      ?? asOptionalString(metadata.name)
+      ?? `${correlationId.toLowerCase()}-workflow-${learning.index + 1}`;
+    const workflowSteps = asArray(metadata.steps)
+      .map((step, stepIndex) => {
+        const s = asRecord(step);
+        const name = asOptionalString(s.name) ?? asOptionalString(s.step) ?? `step-${stepIndex + 1}`;
+        return {
+          order: stepIndex + 1,
+          name,
+          description: asOptionalString(s.description) ?? undefined,
+        };
+      });
+    const template = {
+      name: workflowName,
+      description: learning.content,
+      steps: workflowSteps.length > 0
+        ? workflowSteps
+        : [{ order: 1, name: "review-learning", description: "Review and apply the captured learning." }],
+      tags: asArray(metadata.tags).filter((tag): tag is string => typeof tag === "string"),
+      extracted_from: [correlationId],
+      source: metadata.source ?? "hermes",
+      correlation_id: correlationId,
+      run_id: runId,
+    };
+    result = executeMottoSkillsTool("workflow_library.py", "save", template);
+  } else if (storeType === "decision-log") {
+    const decision = {
+      domain: asOptionalString(metadata.domain) ?? "hermes",
+      question: asOptionalString(metadata.question) ?? `Learning decision ${correlationId} #${learning.index + 1}`,
+      chosen: asOptionalString(metadata.chosen) ?? learning.content,
+      rationale: asOptionalString(metadata.rationale) ?? learning.content,
+      decision_class: asOptionalString(metadata.decision_class) ?? "hermes_learning_bridge",
+      outcome: asOptionalString(metadata.outcome) ?? "recorded",
+      session_id: correlationId,
+      correlation_id: correlationId,
+      run_id: runId,
+    };
+    result = executeMottoSkillsTool("decision_log.py", "log", decision);
+  } else {
+    const domain = asOptionalString(metadata.domain) ?? "hermes";
+    const key = asOptionalString(metadata.key) ?? `learning-${correlationId}-${learning.index + 1}`;
+    const fact = {
+      domain,
+      key,
+      fact: learning.content,
+      confidence: normalizeConfidence(metadata.confidence, "medium"),
+      source: metadata.source ?? "hermes",
+      tags: asArray(metadata.tags).filter((tag): tag is string => typeof tag === "string"),
+      correlation_id: correlationId,
+      run_id: runId,
+    };
+    result = executeMottoSkillsTool("knowledge_distiller.py", "capture", fact);
+  }
+
+  const item = asRecord(result.item);
+  const recordId = asOptionalString(result.id)
+    ?? asOptionalString(item.id)
+    ?? asOptionalString(item.name)
+    ?? asOptionalString(item.key)
+    ?? `${correlationId}-${learning.index + 1}`;
+  const action = asOptionalString(result.action) ?? "upserted";
+  return {
+    store_type: storeType,
+    record_id: recordId,
+    store_path: bridgeStorePath(storeType, recordId),
+    action,
+    correlation_id: correlationId,
+    run_id: runId,
+    memory_id: memoryId,
+    category: learning.category,
+  };
+}
+
+async function ingestCompletedLocalTasks(args: {
+  cycleCorrelationId: string;
+  runId: string | null;
+  objective: string;
+  observedAt: string;
+  limit?: number;
+}): Promise<LocalTaskOutcome[]> {
+  const summaries = asArray(await FLEET_CONTROL_PLANE.listLocalTasks({ limit: args.limit ?? 50 }))
+    .map((entry) => asRecord(entry));
+  const completedSummaries = summaries.filter((entry) => {
+    const status = (asOptionalString(entry.status) ?? "").toLowerCase();
+    return ["succeeded", "failed", "cancelled"].includes(status)
+      && (asOptionalString(entry.source) ?? "") === FLEET_AGENT_NAME;
+  });
+
+  const outcomes: LocalTaskOutcome[] = [];
+  for (const summary of completedSummaries) {
+    const taskId = asOptionalString(summary.id);
+    if (!taskId || memoryAlreadyIngestedForTask(taskId)) continue;
+
+    const detailRaw = await FLEET_CONTROL_PLANE.getLocalTask(taskId);
+    const detail = asRecord(detailRaw);
+    if (!detail || Object.keys(detail).length === 0) continue;
+    const payload = asRecord(detail.payload ?? asRecord(detail).payload);
+    const taskCorrelationId = asOptionalString(payload.correlation_id);
+    const taskRunId = asOptionalString(payload.run_id);
+    const status = (asOptionalString(detail.status) ?? asOptionalString(summary.status) ?? "unknown").toLowerCase();
+    const kind = asOptionalString(detail.kind) ?? asOptionalString(summary.kind) ?? "local";
+    const finishedAt = asOptionalString(detail.finished_at) ?? asOptionalString(summary.finished_at);
+    const errorText = asOptionalString(detail.error) ?? asOptionalString(summary.error) ?? undefined;
+    const resultPayload = parseMetadata(detail.result);
+    const outcomeCategory: TypedMemoryCategory = status === "succeeded"
+      ? (kind.includes("browser") ? "workflow" : "learning")
+      : "capability_gap";
+    const content = status === "succeeded"
+      ? `Completed local task ${taskId} (${kind}) for objective "${args.objective}".`
+      : `Local task ${taskId} (${kind}) finished with status "${status}".`;
+    const stored = storeTypedMemoryRecord({
+      category: outcomeCategory,
+      content,
+      metadata: {
+        source: "local_task_completion",
+        task_kind: kind,
+        task_status: status,
+        task_finished_at: finishedAt,
+        task_result: resultPayload,
+        task_error: errorText,
+        objective: args.objective,
+        ingested_by_correlation_id: args.cycleCorrelationId,
+        originating_correlation_id: taskCorrelationId,
+        originating_run_id: taskRunId,
+      },
+      trace: {
+        source: "local_task_completion",
+        correlationId: taskCorrelationId ?? args.cycleCorrelationId,
+        runId: taskRunId ?? args.runId,
+        taskId,
+        timestamp: finishedAt ?? args.observedAt,
+        confidence: status === "succeeded" ? "high" : "medium",
+      },
+    });
+    outcomes.push({
+      task_id: taskId,
+      kind,
+      status,
+      source: asOptionalString(summary.source) ?? FLEET_AGENT_NAME,
+      finished_at: finishedAt,
+      correlation_id: taskCorrelationId,
+      run_id: taskRunId,
+      memory_id: stored.id,
+      memory_category: stored.category,
+    });
+  }
+  return outcomes;
 }
 
 async function ensureFleetRegistered(): Promise<void> {
@@ -459,6 +1027,7 @@ function buildStructuredPlan(
   correlationId: string,
   observedAt: string,
   consumedInboundIntents: unknown[],
+  recalledBridgeReferences: Array<Record<string, unknown>>,
 ) {
   const observations = asArray(args.observations);
   const proposedActions = asArray(args.proposed_actions);
@@ -473,6 +1042,7 @@ function buildStructuredPlan(
       correlation_id: correlationId,
       generated_at: observedAt,
       inbound_intent_ids: intentIds,
+      bridged_knowledge_references: recalledBridgeReferences,
     };
   }
   if (typeof planInput === "string" && planInput.trim().length > 0) {
@@ -482,6 +1052,7 @@ function buildStructuredPlan(
       objective: args.objective,
       narrative: redactSecrets(planInput),
       inbound_intent_ids: intentIds,
+      bridged_knowledge_references: recalledBridgeReferences,
     };
   }
   return {
@@ -490,6 +1061,7 @@ function buildStructuredPlan(
     objective: args.objective,
     summary: "Structured plan synthesized from cycle inputs.",
     inbound_intent_ids: intentIds,
+    bridged_knowledge_references: recalledBridgeReferences,
     next_steps: [
       { step: "Review observations", count: observations.length, priority: "high", status: "ready" },
       { step: "Process inbound intents", count: intentIds.length, priority: "high", status: intentIds.length > 0 ? "ready" : "none" },
@@ -591,11 +1163,14 @@ const tools: Tool[] = [
   },
   {
     name: "memory_store",
-    description: "Store a fact, decision, or knowledge in persistent memory.",
+    description: "Store typed knowledge in persistent memory with traceability metadata.",
     inputSchema: {
       type: "object",
       properties: {
-        category: { type: "string", description: "Category: decision, fact, project, learning" },
+        category: {
+          type: "string",
+          description: "Typed category: fact, decision, project, learning, workflow, observation, capability_gap, approval_request, or validation.",
+        },
         content: { type: "string", description: "Content to remember" },
         metadata: { type: "object", description: "Optional structured metadata" },
       },
@@ -677,6 +1252,21 @@ const tools: Tool[] = [
         learnings: { type: "array", items: { type: "object" }, description: "Learnings captured from the cycle." },
         pending_approvals: { type: "number", description: "Count of pending approvals associated with the cycle." },
         blocked_capabilities: { type: "array", items: { type: "string" }, description: "Currently blocked capabilities for heartbeat metadata." },
+        ingest_completed_local_tasks: {
+          type: "boolean",
+          description: "When true (default), Hermes ingests completed local task outcomes into typed memory learnings.",
+          default: true,
+        },
+        local_task_ingest_limit: {
+          type: "number",
+          description: "Maximum completed local tasks to scan for ingestion in this cycle (default 50).",
+          default: 50,
+        },
+        recall_bridged_limit: {
+          type: "number",
+          description: "How many recent motto-skills bridge records to include in recalled plan context (default 10).",
+          default: 10,
+        },
       },
       required: ["objective"],
     },
@@ -836,13 +1426,22 @@ async function handleVpsRestart() {
 }
 
 async function handleMemoryStore(args: { category: string; content: string; metadata?: Record<string, unknown> }) {
-  const id = randomUUID();
-  const safeContent = redactSecrets(args.content);
-  const safeMetadata = JSON.stringify(redactMetadata(args.metadata ?? {}));
-  db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-    [id, args.category, safeContent, safeMetadata]);
-  scheduleSave();
-  return { content: [{ type: "text", text: `Memory stored [${id}] in "${args.category}"` }] };
+  const metadata = parseMetadata(args.metadata);
+  const stored = storeTypedMemoryRecord({
+    category: args.category,
+    content: args.content,
+    metadata,
+    fallbackCategory: "observation",
+    trace: {
+      source: asOptionalString(metadata.source) ?? "memory_store",
+      correlationId: asOptionalString(metadata.correlation_id) ?? undefined,
+      runId: asOptionalString(metadata.run_id),
+      taskId: asOptionalString(metadata.task_id) ?? asOptionalString(metadata.local_task_id),
+      timestamp: asOptionalString(metadata.timestamp) ?? undefined,
+      confidence: metadata.confidence,
+    },
+  });
+  return { content: [{ type: "text", text: `Memory stored [${stored.id}] in "${stored.category}"` }] };
 }
 
 async function handleMemoryRecall(args: { category?: string; query?: string; limit?: number }) {
@@ -881,14 +1480,18 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
   const result = await perplexityResearch(query);
   const planText = result.choices?.[0]?.message?.content ?? "Plan generation failed";
 
-  const id = randomUUID();
   const planRecord = redactSecrets(`## Plan: ${args.goal}\n\n${planText}`);
-  const safeMetadata = JSON.stringify(redactMetadata({ goal: args.goal, context: args.context ?? "" }));
-  db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-    [id, "plan", planRecord, safeMetadata]);
-  scheduleSave();
+  const stored = storeTypedMemoryRecord({
+    category: "project",
+    content: planRecord,
+    metadata: { goal: args.goal, context: args.context ?? "", generated_by: "plan_tool" },
+    trace: {
+      source: "plan_tool",
+      confidence: "medium",
+    },
+  });
 
-  return { content: [{ type: "text", text: `${planRecord}\n\n---\nStored [${id}]` }] };
+  return { content: [{ type: "text", text: `${planRecord}\n\n---\nStored [${stored.id}]` }] };
 }
 
 function tryParseJson(text: string): unknown {
@@ -945,6 +1548,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   const signaledIntents: Array<Record<string, unknown>> = [];
   const queuedLocalTasks: Array<Record<string, unknown>> = [];
   const filedCapabilityRequests: Array<Record<string, unknown>> = [];
+  const ingestedLocalTaskOutcomes: LocalTaskOutcome[] = [];
+  const learningMemoryRecords: Array<Record<string, unknown>> = [];
+  const mottoSkillsBridges: BridgeResult[] = [];
 
   try {
     await sendFleetHeartbeat("cycle_start", objective);
@@ -997,13 +1603,13 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     const sourceAgent = typeof intentReq.source_agent === "string" && intentReq.source_agent.trim().length > 0
       ? intentReq.source_agent.trim()
       : FLEET_AGENT_NAME;
-    const payload = {
+    const payload = redactMetadata({
       ...asRecord(intentReq.payload),
       correlation_id: correlationId,
       run_id: runId,
       objective,
       requested_at: observedAt,
-    };
+    }) as Record<string, unknown>;
     try {
       if (shouldSimulateOperationFailure(simulateFailures, "signal_intent", "coordination_intents")) {
         throw new Error("Simulated signal_intent failure");
@@ -1034,13 +1640,14 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       cycleErrors.push(`local_tasks[${index}] missing kind`);
       continue;
     }
-    const payload = {
+    const payload = redactMetadata({
       ...asRecord(taskReq.payload),
       correlation_id: correlationId,
       run_id: runId,
       objective,
       queued_at: observedAt,
-    };
+      created_by: FLEET_AGENT_NAME,
+    }) as Record<string, unknown>;
     const source = typeof taskReq.source === "string" && taskReq.source.trim().length > 0
       ? taskReq.source.trim()
       : FLEET_AGENT_NAME;
@@ -1087,9 +1694,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     const requestedBy = typeof req.requested_by === "string" && req.requested_by.trim().length > 0
       ? req.requested_by.trim()
       : FLEET_AGENT_NAME;
-    const justification = justificationRaw.includes(correlationId)
+    const justification = redactSecrets(justificationRaw.includes(correlationId)
       ? justificationRaw
-      : `[${correlationId}] ${justificationRaw}`;
+      : `[${correlationId}] ${justificationRaw}`);
     const repo = typeof req.repo === "string" ? req.repo : undefined;
     const moveId = typeof req.move_id === "number" && Number.isFinite(req.move_id)
       ? Math.trunc(req.move_id)
@@ -1129,10 +1736,104 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       });
     }
   }
-  const plan = buildStructuredPlan(args, correlationId, observedAt, consumedInboundIntents);
   const capabilityGaps = asArray(args.capability_gaps);
   const validationEvidence = validationEvidenceEntries(args.validation_evidence);
-  const learnings = asArray(args.learnings);
+  const normalizedLearnings = normalizeLearningEntries(
+    asArray(args.learnings),
+    correlationId,
+    runId,
+    observedAt,
+  );
+
+  if (asBool(args.ingest_completed_local_tasks, true)) {
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "list_local_tasks", "local_task_outcomes")) {
+        throw new Error("Simulated local task outcome ingestion failure");
+      }
+      const outcomes = await ingestCompletedLocalTasks({
+        cycleCorrelationId: correlationId,
+        runId,
+        objective,
+        observedAt,
+        limit: asNonNegativeInt(args.local_task_ingest_limit, 50),
+      });
+      ingestedLocalTaskOutcomes.push(...outcomes);
+    } catch (error) {
+      cycleErrors.push("ingest_completed_local_tasks failed");
+      queueFleetRetry("ingest_completed_local_tasks", correlationId, runId, error);
+    }
+  }
+
+  for (const learning of normalizedLearnings) {
+    const learningMemory = storeTypedMemoryRecord({
+      category: learning.category,
+      content: learning.content,
+      metadata: {
+        ...learning.metadata,
+        repeated: learning.repeated,
+        material: learning.material,
+      },
+      trace: {
+        source: asOptionalString(learning.metadata.source) ?? "business_management_cycle_learning",
+        correlationId,
+        runId,
+        timestamp: observedAt,
+        confidence: learning.metadata.confidence,
+      },
+    });
+    learningMemoryRecords.push({
+      memory_id: learningMemory.id,
+      category: learningMemory.category,
+      repeated: learning.repeated,
+      material: learning.material,
+    });
+    if (!(learning.repeated || learning.material)) continue;
+    try {
+      const bridge = bridgeLearningToMottoSkills(learning, correlationId, runId, learningMemory.id);
+      const bridgeMemory = storeTypedMemoryRecord({
+        category: learning.category,
+        content: `Bridged learning to ${bridge.store_type} (${bridge.record_id})`,
+        metadata: {
+          ...learning.metadata,
+          bridge_status: "bridged",
+          bridge_store_type: bridge.store_type,
+          bridge_record_id: bridge.record_id,
+          bridge_store_path: bridge.store_path,
+          bridge_action: bridge.action,
+          bridged_from_memory_id: learningMemory.id,
+        },
+        trace: {
+          source: "motto_skills_bridge",
+          correlationId,
+          runId,
+          timestamp: observedAt,
+          confidence: "high",
+        },
+      });
+      mottoSkillsBridges.push({ ...bridge, memory_id: bridgeMemory.id });
+    } catch (error) {
+      cycleErrors.push(`motto_skills_bridge failed for learning[${learning.index}]`);
+      queueKnowledgeRetry("motto_skills_bridge", correlationId, runId, error);
+    }
+  }
+
+  const recalledBridgeReferences = recentBridgeReferences(
+    asNonNegativeInt(args.recall_bridged_limit, 10),
+  );
+  const plan = buildStructuredPlan(
+    args,
+    correlationId,
+    observedAt,
+    consumedInboundIntents,
+    recalledBridgeReferences,
+  );
+  const learnings = normalizedLearnings.map((learning) => ({
+    category: learning.category,
+    content: learning.content,
+    repeated: learning.repeated,
+    material: learning.material,
+    metadata: learning.metadata,
+  }));
 
   const sectionPayloads: Array<{ section: string; event_kind: string; artifact_kind: string; data: unknown; level?: string }> = [
     {
@@ -1157,6 +1858,12 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       data: queuedLocalTasks,
     },
     {
+      section: "local_task_outcomes",
+      event_kind: "cycle.local_task_outcomes",
+      artifact_kind: "business_local_task_outcomes",
+      data: ingestedLocalTaskOutcomes,
+    },
+    {
       section: "capability_requests",
       event_kind: "cycle.capability_requests",
       artifact_kind: "business_capability_requests",
@@ -1168,19 +1875,23 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     { section: "proposed_actions", event_kind: "cycle.proposed_actions", artifact_kind: "business_proposed_actions", data: proposedActions },
     { section: "capability_gaps", event_kind: "cycle.capability_gaps", artifact_kind: "business_capability_gaps", data: capabilityGaps, level: "warn" },
     { section: "validation_evidence", event_kind: "cycle.validation_evidence", artifact_kind: "business_validation_evidence", data: validationEvidence },
+    { section: "learning_memory_records", event_kind: "cycle.learning_memory_records", artifact_kind: "business_learning_memory_records", data: learningMemoryRecords },
     { section: "learnings", event_kind: "cycle.learnings", artifact_kind: "business_learnings", data: learnings },
+    { section: "motto_skills_bridge", event_kind: "cycle.motto_skills_bridge", artifact_kind: "business_motto_skills_bridge", data: mottoSkillsBridges },
+    { section: "recalled_bridges", event_kind: "cycle.recalled_bridges", artifact_kind: "business_recalled_bridges", data: recalledBridgeReferences },
   ];
 
   const emittedSections: Array<Record<string, unknown>> = [];
 
   for (const section of sectionPayloads) {
+    const safeSectionData = redactMetadata(section.data);
     const eventPayload = {
       correlation_id: correlationId,
       objective,
       section: section.section,
       generated_at: observedAt,
       run_id: runId,
-      data: section.data,
+      data: safeSectionData,
     };
 
     let eventId: number | null = null;
@@ -1251,7 +1962,10 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     consumedInboundIntents,
     signaledIntents,
     queuedLocalTasks,
+    ingestedLocalTaskOutcomes,
     capabilityRequests: filedCapabilityRequests,
+    learningMemoryRecords,
+    mottoSkillsBridges,
     errors: cycleErrors,
     emittedSections,
     simulateFailures,
@@ -1272,7 +1986,11 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     inbound_intents_consumed: consumedInboundIntents,
     intents_signaled: signaledIntents,
     local_tasks_queued: queuedLocalTasks,
+    local_task_outcomes_ingested: ingestedLocalTaskOutcomes,
     capability_requests_filed: filedCapabilityRequests,
+    learning_memory_records: learningMemoryRecords,
+    motto_skills_bridges: mottoSkillsBridges,
+    recalled_bridged_knowledge: recalledBridgeReferences,
     knowledge_record_id: knowledgeRecordId,
     pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
     pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
@@ -1320,6 +2038,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
         pending_knowledge_retry_count: fleetLifecycleState.pendingKnowledgeRetries
           .filter((retry) => retry.correlation_id === correlationId).length,
         knowledge_record_id: knowledgeRecordId,
+        local_task_outcome_count: ingestedLocalTaskOutcomes.length,
+        learning_memory_count: learningMemoryRecords.length,
+        motto_skills_bridge_count: mottoSkillsBridges.length,
       },
     });
   } catch (error) {
@@ -1342,7 +2063,11 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     inbound_intents_consumed: consumedInboundIntents,
     intents_signaled: signaledIntents,
     local_tasks_queued: queuedLocalTasks,
+    local_task_outcomes_ingested: ingestedLocalTaskOutcomes,
     capability_requests_filed: filedCapabilityRequests,
+    learning_memory_records: learningMemoryRecords,
+    motto_skills_bridges: mottoSkillsBridges,
+    recalled_bridged_knowledge: recalledBridgeReferences,
     knowledge_record_id: knowledgeRecordId,
     pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
     pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries.filter((retry) => retry.correlation_id === correlationId),
@@ -1430,9 +2155,16 @@ function recordMutationAudit(name: string, args: Record<string, unknown>, level:
       deployed_commit: BUILD_INFO.commit,
       at: new Date().toISOString(),
     };
-    db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-      [randomUUID(), "deployment", redactSecrets(`Authorized ${level} action via ${name}`), redactSecrets(JSON.stringify(meta))]);
-    scheduleSave();
+    storeTypedMemoryRecord({
+      category: "decision",
+      content: `Authorized ${level} action via ${name}`,
+      metadata: { ...meta, decision_class: "mutation_audit" },
+      trace: {
+        source: "policy_audit",
+        confidence: "high",
+        correlationId: asOptionalString(args.validation_id) ?? undefined,
+      },
+    });
   } catch {
     // audit must never block or fail the action
   }
@@ -1477,6 +2209,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 async function main() {
   await initDb();
+  restoreLearningStateFromMemory();
   await ensureFleetStartupLifecycle();
 
   const argv = process.argv.slice(2);
