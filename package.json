@@ -8,7 +8,7 @@
     "hermes-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/gen-build-info.mjs && tsc",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
     "start:http": "node dist/index.js --http"

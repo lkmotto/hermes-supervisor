@@ -8,8 +8,10 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { RISK_METADATA, evaluateToolPolicy, type RiskMetadata } from "./policy.js";
+import { redactSecrets } from "./redact.js";
 
-// ─── Version (sourced from package metadata) ───────────────────────
+// ─── Version + build provenance (sourced from package/build metadata) ──
 
 function resolveVersion(): string {
   try {
@@ -24,6 +26,43 @@ function resolveVersion(): string {
 }
 
 const VERSION = resolveVersion();
+
+interface BuildInfo {
+  name: string;
+  version: string;
+  commit: string;
+  ref: string;
+  repository: string;
+  builtAt: string;
+}
+
+function resolveBuildInfo(): BuildInfo {
+  const fallback: BuildInfo = {
+    name: "hermes-supervisor",
+    version: VERSION,
+    commit: process.env.HERMES_BUILD_COMMIT ?? "unknown",
+    ref: process.env.HERMES_BUILD_REF ?? "unknown",
+    repository: "https://github.com/lkmotto/hermes-supervisor",
+    builtAt: "unknown",
+  };
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const raw = readFileSync(join(here, "..", "build-info.json"), "utf8");
+    const bi = JSON.parse(raw) as Partial<BuildInfo>;
+    return {
+      name: bi.name ?? fallback.name,
+      version: bi.version ?? VERSION,
+      commit: bi.commit ?? fallback.commit,
+      ref: bi.ref ?? fallback.ref,
+      repository: bi.repository ?? fallback.repository,
+      builtAt: bi.builtAt ?? fallback.builtAt,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+const BUILD_INFO = resolveBuildInfo();
 
 // ─── Config ────────────────────────────────────────────────────────
 
@@ -236,6 +275,84 @@ const tools: Tool[] = [
   },
 ];
 
+// ─── Risk metadata decoration (visible in tools/list) ──────────────
+
+interface RiskAnnotations {
+  title: string;
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+  riskLevel: string;
+  confirmationRequired: boolean;
+  approvalRequired: boolean;
+}
+
+type HermesTool = Tool & { risk: RiskMetadata; annotations: RiskAnnotations };
+
+const POLICY_FIELD_SCHEMAS: Record<string, { type: string; description: string }> = {
+  confirm: {
+    type: "boolean",
+    description: "Required for mutating tools. Must be true to proceed; calls without it fail closed with no state change.",
+  },
+  approval: {
+    type: "object",
+    description: "Explicit approval provenance (e.g. {approved_by, reason, policy}). Required for dangerous/global actions and non-Hermes project control.",
+  },
+  validation_id: {
+    type: "string",
+    description: "Validation correlation ID. Required for Hermes-scoped redeploy/restart.",
+  },
+  validation_evidence: {
+    type: "object",
+    description: "Current source validation evidence {commit, build_passed:true} matching the deployed commit. Required for Hermes-scoped redeploy/restart.",
+  },
+};
+
+function policyFieldsFor(name: string): string[] {
+  const meta = RISK_METADATA[name];
+  if (!meta?.mutating) return [];
+  if (meta.scope === "global") return ["confirm", "approval"];
+  return ["confirm", "approval", "validation_id", "validation_evidence"];
+}
+
+function decorateTool(tool: Tool): HermesTool {
+  const meta: RiskMetadata = RISK_METADATA[tool.name] ?? {
+    level: "read-only", mutating: false, confirmation_required: false,
+    approval_required: false, scope: "read", summary: "",
+  };
+
+  const inputSchema = JSON.parse(JSON.stringify(tool.inputSchema)) as {
+    type: string; properties?: Record<string, unknown>; required?: string[];
+  };
+  if (meta.mutating) {
+    inputSchema.properties = inputSchema.properties ?? {};
+    for (const field of policyFieldsFor(tool.name)) {
+      if (!(field in inputSchema.properties)) {
+        inputSchema.properties[field] = POLICY_FIELD_SCHEMAS[field];
+      }
+    }
+  }
+
+  return {
+    ...tool,
+    inputSchema: inputSchema as Tool["inputSchema"],
+    risk: meta,
+    annotations: {
+      title: tool.name,
+      readOnlyHint: !meta.mutating && meta.scope === "read",
+      destructiveHint: meta.level === "dangerous-global-mutation",
+      idempotentHint: false,
+      openWorldHint: meta.scope !== "memory",
+      riskLevel: meta.level,
+      confirmationRequired: meta.confirmation_required,
+      approvalRequired: meta.approval_required,
+    },
+  };
+}
+
+const publicTools: HermesTool[] = tools.map(decorateTool);
+
 // ─── Tool handlers ─────────────────────────────────────────────────
 
 async function handleResearch(args: { query: string }) {
@@ -352,6 +469,73 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
   return { content: [{ type: "text", text: `${planRecord}\n\n---\nStored [${id}]` }] };
 }
 
+// ─── Dispatch: policy gate + secret redaction + audit ──────────────
+
+type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
+
+const HANDLERS: Record<string, (a: any) => Promise<ToolResult>> = {
+  research: handleResearch, vps_info: handleVpsInfo, vps_metrics: handleVpsMetrics,
+  vps_projects: handleVpsProjects, vps_project_logs: handleVpsProjectLogs,
+  vps_restart_project: handleVpsRestartProject, vps_stop_project: handleVpsStopProject,
+  vps_start_project: handleVpsStartProject, vps_deploy: handleVpsDeploy,
+  vps_snapshot: handleVpsSnapshot, vps_restart: handleVpsRestart,
+  memory_store: handleMemoryStore, memory_recall: handleMemoryRecall, plan: handlePlan,
+};
+
+function redactResult(result: ToolResult): ToolResult {
+  return {
+    ...result,
+    content: result.content.map((c) =>
+      c.type === "text" ? { ...c, text: redactSecrets(c.text) } : c),
+  };
+}
+
+function recordMutationAudit(name: string, args: Record<string, unknown>, level: string) {
+  try {
+    const approval = args.approval;
+    const approver = approval && typeof approval === "object"
+      ? ((approval as Record<string, unknown>).approved_by ?? (approval as Record<string, unknown>).approver ?? "provided")
+      : (typeof approval === "string" ? "provided" : "none");
+    const evidence = args.validation_evidence as Record<string, unknown> | undefined;
+    const meta = {
+      tool: name,
+      risk_level: level,
+      project: args.project ?? args.name ?? null,
+      validation_id: args.validation_id ?? null,
+      validated_commit: evidence?.commit ?? null,
+      approver,
+      deployed_commit: BUILD_INFO.commit,
+      at: new Date().toISOString(),
+    };
+    db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
+      [randomUUID(), "deployment", redactSecrets(`Authorized ${level} action via ${name}`), redactSecrets(JSON.stringify(meta))]);
+    scheduleSave();
+  } catch {
+    // audit must never block or fail the action
+  }
+}
+
+async function dispatchTool(name: string, rawArgs: unknown): Promise<ToolResult> {
+  const args: Record<string, unknown> =
+    rawArgs && typeof rawArgs === "object" ? (rawArgs as Record<string, unknown>) : {};
+  const policy = evaluateToolPolicy(name, args, { buildCommit: BUILD_INFO.commit });
+  if (!policy.allowed && policy.denial) {
+    return { content: [{ type: "text", text: JSON.stringify(policy.denial, null, 2) }], isError: true };
+  }
+  const handler = HANDLERS[name];
+  if (!handler) {
+    return { content: [{ type: "text", text: `Error: Unknown tool: ${name}` }], isError: true };
+  }
+  if (RISK_METADATA[name]?.mutating) recordMutationAudit(name, args, policy.effective_level);
+  try {
+    const result = await handler(args);
+    return redactResult(result);
+  } catch (err) {
+    const msg = redactSecrets(err instanceof Error ? err.message : String(err));
+    return { content: [{ type: "text", text: `Error: ${msg}` }], isError: true };
+  }
+}
+
 // ─── Server ────────────────────────────────────────────────────────
 
 const server = new Server(
@@ -359,24 +543,11 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: publicTools }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  try {
-    const handlers: Record<string, (a: any) => Promise<{ content: { type: string; text: string }[] }>> = {
-      research: handleResearch, vps_info: handleVpsInfo, vps_metrics: handleVpsMetrics,
-      vps_projects: handleVpsProjects, vps_project_logs: handleVpsProjectLogs,
-      vps_restart_project: handleVpsRestartProject, vps_stop_project: handleVpsStopProject,
-      vps_start_project: handleVpsStartProject, vps_deploy: handleVpsDeploy,
-      vps_snapshot: handleVpsSnapshot, vps_restart: handleVpsRestart,
-      memory_store: handleMemoryStore, memory_recall: handleMemoryRecall, plan: handlePlan,
-    };
-    if (name in handlers) return await handlers[name](args);
-    throw new Error(`Unknown tool: ${name}`);
-  } catch (err) {
-    return { content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
-  }
+  return await dispatchTool(name, args);
 });
 
 // ─── Entrypoint ────────────────────────────────────────────────────
@@ -405,7 +576,15 @@ async function main() {
 
       if (req.method === "GET" && req.url === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "ok", name: "hermes-supervisor", version: VERSION }));
+        res.end(JSON.stringify({
+          status: "ok",
+          name: "hermes-supervisor",
+          version: VERSION,
+          commit: BUILD_INFO.commit,
+          ref: BUILD_INFO.ref,
+          repository: BUILD_INFO.repository,
+          builtAt: BUILD_INFO.builtAt,
+        }));
         return;
       }
 
@@ -477,34 +656,25 @@ async function handleRpc(rpc: RpcRequest) {
         result: {
           protocolVersion: "2025-06-18",
           capabilities: { tools: {} },
-          serverInfo: { name: "hermes-supervisor", version: VERSION },
+          serverInfo: {
+            name: "hermes-supervisor",
+            version: VERSION,
+            commit: BUILD_INFO.commit,
+            ref: BUILD_INFO.ref,
+            repository: BUILD_INFO.repository,
+          },
         },
       };
     case "tools/list":
       return {
         jsonrpc: "2.0",
         id: rpc.id,
-        result: { tools },
+        result: { tools: publicTools },
       };
     case "tools/call": {
       const params = rpc.params as { name: string; arguments?: Record<string, unknown> };
-      const handlers: Record<string, (a: any) => Promise<{ content: { type: string; text: string }[] }>> = {
-        research: handleResearch, vps_info: handleVpsInfo, vps_metrics: handleVpsMetrics,
-        vps_projects: handleVpsProjects, vps_project_logs: handleVpsProjectLogs,
-        vps_restart_project: handleVpsRestartProject, vps_stop_project: handleVpsStopProject,
-        vps_start_project: handleVpsStartProject, vps_deploy: handleVpsDeploy,
-        vps_snapshot: handleVpsSnapshot, vps_restart: handleVpsRestart,
-        memory_store: handleMemoryStore, memory_recall: handleMemoryRecall, plan: handlePlan,
-      };
-      if (params.name in handlers) {
-        const result = await handlers[params.name](params.arguments ?? {});
-        return { jsonrpc: "2.0", id: rpc.id, result };
-      }
-      return {
-        jsonrpc: "2.0",
-        id: rpc.id,
-        error: { code: -32601, message: `Unknown tool: ${params.name}` },
-      };
+      const result = await dispatchTool(params.name, params.arguments ?? {});
+      return { jsonrpc: "2.0", id: rpc.id, result };
     }
     case "notifications/initialized":
       return { jsonrpc: "2.0", id: rpc.id, result: {} };
