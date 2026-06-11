@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RISK_METADATA, evaluateToolPolicy, type RiskMetadata } from "./policy.js";
-import { redactSecrets } from "./redact.js";
+import { redactSecrets, redactMetadata } from "./redact.js";
 
 // ─── Version + build provenance (sourced from package/build metadata) ──
 
@@ -418,8 +418,10 @@ async function handleVpsRestart() {
 
 async function handleMemoryStore(args: { category: string; content: string; metadata?: Record<string, unknown> }) {
   const id = randomUUID();
+  const safeContent = redactSecrets(args.content);
+  const safeMetadata = JSON.stringify(redactMetadata(args.metadata ?? {}));
   db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-    [id, args.category, args.content, JSON.stringify(args.metadata ?? {})]);
+    [id, args.category, safeContent, safeMetadata]);
   scheduleSave();
   return { content: [{ type: "text", text: `Memory stored [${id}] in "${args.category}"` }] };
 }
@@ -461,9 +463,10 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
   const planText = result.choices?.[0]?.message?.content ?? "Plan generation failed";
 
   const id = randomUUID();
-  const planRecord = `## Plan: ${args.goal}\n\n${planText}`;
+  const planRecord = redactSecrets(`## Plan: ${args.goal}\n\n${planText}`);
+  const safeMetadata = JSON.stringify(redactMetadata({ goal: args.goal, context: args.context ?? "" }));
   db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-    [id, "plan", planRecord, JSON.stringify({ goal: args.goal, context: args.context ?? "" })]);
+    [id, "plan", planRecord, safeMetadata]);
   scheduleSave();
 
   return { content: [{ type: "text", text: `${planRecord}\n\n---\nStored [${id}]` }] };
