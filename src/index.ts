@@ -344,11 +344,12 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
   const planText = result.choices?.[0]?.message?.content ?? "Plan generation failed";
 
   const id = randomUUID();
+  const planRecord = `## Plan: ${args.goal}\n\n${planText}`;
   db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
-    [id, "plan", planText, JSON.stringify({ goal: args.goal, context: args.context ?? "" })]);
+    [id, "plan", planRecord, JSON.stringify({ goal: args.goal, context: args.context ?? "" })]);
   scheduleSave();
 
-  return { content: [{ type: "text", text: `## Plan: ${args.goal}\n\n${planText}\n\n---\nStored [${id}]` }] };
+  return { content: [{ type: "text", text: `${planRecord}\n\n---\nStored [${id}]` }] };
 }
 
 // ─── Server ────────────────────────────────────────────────────────
