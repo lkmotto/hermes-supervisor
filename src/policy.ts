@@ -70,6 +70,14 @@ export const RISK_METADATA: Record<string, RiskMetadata> = {
     level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
     scope: "memory", summary: "Generates a plan and stores it in Hermes memory; no infrastructure change.",
   },
+  business_management_cycle: {
+    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "memory", summary: "Writes structured fleet run/events/artifacts and heartbeats for Hermes business-management cycles.",
+  },
+  fleet_get_run_details: {
+    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "read", summary: "Read-only retrieval of fleet run details and artifact contents.",
+  },
   vps_restart_project: {
     level: "hermes-scoped-mutation", mutating: true, confirmation_required: true, approval_required: true,
     scope: "hermes", summary: "Restarts a Docker project. Hermes-scoped when project=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",

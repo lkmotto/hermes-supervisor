@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RISK_METADATA, evaluateToolPolicy, type RiskMetadata } from "./policy.js";
 import { redactSecrets, redactMetadata } from "./redact.js";
+import { FleetClient } from "./fleet.js";
 
 // ─── Version + build provenance (sourced from package/build metadata) ──
 
@@ -71,6 +72,12 @@ const PERPLEXITY_KEY = process.env.PERPLEXITY_API_KEY ?? "";
 const HOSTINGER_API_BASE = "https://developers.hostinger.com";
 const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
+const FLEET_AGENT_NAME = process.env.HERMES_FLEET_AGENT_NAME?.trim() || "hermes";
+const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "managed";
+const FLEET_CONTROL_PLANE = new FleetClient({
+  baseUrl: process.env.MOTTO_MCP_URL ?? "",
+  authToken: process.env.MOTTO_MCP_AUTH_TOKEN ?? "",
+});
 
 // ─── SQLite via sql.js (debounced persist for speed) ───────────────
 
@@ -145,6 +152,202 @@ async function perplexityResearch(query: string) {
   });
   if (!res.ok) throw new Error(`Perplexity ${res.status}: ${await res.text()}`);
   return res.json();
+}
+
+// ─── Fleet lifecycle integration helpers ──────────────────────────
+
+interface FleetHeartbeatStatus {
+  mode: string;
+  autonomy_level: string;
+  current_process_focus: string;
+  last_learn_cycle: string;
+  pending_approvals: number;
+  blocked_capabilities: string[];
+}
+
+interface FleetFailureRecord {
+  operation: string;
+  correlation_id: string;
+  run_id: string | null;
+  error: string;
+  queued_at: string;
+  status: "pending_retry";
+}
+
+interface BusinessManagementCycleArgs {
+  objective: string;
+  correlation_id?: string;
+  observations?: unknown[];
+  plan?: unknown;
+  proposed_actions?: unknown[];
+  capability_gaps?: unknown[];
+  validation_evidence?: unknown;
+  learnings?: unknown[];
+  pending_approvals?: number;
+  blocked_capabilities?: unknown[];
+}
+
+const fleetLifecycleState = {
+  startupAttempted: false,
+  startupHeartbeatAt: null as string | null,
+  lastLearnCycle: null as string | null,
+  pendingApprovals: 0,
+  blockedCapabilities: [] as string[],
+  pendingRetries: [] as FleetFailureRecord[],
+  lastError: null as string | null,
+};
+
+let fleetRegistrationPromise: Promise<void> | null = null;
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function normalizeCorrelationId(raw?: string): string {
+  const trimmed = (raw ?? "").trim();
+  return trimmed.length > 0 ? trimmed : `VALIDATION-FLEET-${Date.now()}-${randomUUID().slice(0, 8)}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asStringArray(value: unknown): string[] {
+  return asArray(value).filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function asNonNegativeInt(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.trunc(value));
+}
+
+function currentBlockedCapabilities(extra: string[] = []): string[] {
+  const blocked = new Set<string>([...fleetLifecycleState.blockedCapabilities, ...extra]);
+  if (!FLEET_CONTROL_PLANE.isConfigured()) blocked.add("motto_fleet_control_plane_unconfigured");
+  if (fleetLifecycleState.pendingRetries.length > 0) blocked.add("fleet_write_pending_retry");
+  return [...blocked];
+}
+
+function buildHeartbeatStatus(mode: string, currentProcessFocus: string): FleetHeartbeatStatus {
+  return {
+    mode: redactSecrets(mode),
+    autonomy_level: redactSecrets(FLEET_AUTONOMY_LEVEL),
+    current_process_focus: redactSecrets(currentProcessFocus),
+    last_learn_cycle: fleetLifecycleState.lastLearnCycle ?? "never",
+    pending_approvals: fleetLifecycleState.pendingApprovals,
+    blocked_capabilities: currentBlockedCapabilities(),
+  };
+}
+
+function persistFleetRetry(record: FleetFailureRecord) {
+  try {
+    const content = redactSecrets(`Fleet write pending retry for ${record.operation} [${record.correlation_id}]`);
+    const metadata = JSON.stringify(redactMetadata(record));
+    db.run("INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
+      [randomUUID(), "capability_gap", content, metadata]);
+    scheduleSave();
+  } catch {
+    // Persistence is best-effort and should not block the call path.
+  }
+}
+
+function queueFleetRetry(operation: string, correlationId: string, runId: string | null, error: unknown) {
+  const record: FleetFailureRecord = {
+    operation,
+    correlation_id: correlationId,
+    run_id: runId,
+    error: redactSecrets(error instanceof Error ? error.message : String(error)),
+    queued_at: nowIso(),
+    status: "pending_retry",
+  };
+  fleetLifecycleState.pendingRetries.push(record);
+  if (fleetLifecycleState.pendingRetries.length > 25) {
+    fleetLifecycleState.pendingRetries.shift();
+  }
+  fleetLifecycleState.lastError = record.error;
+  persistFleetRetry(record);
+}
+
+async function ensureFleetRegistered(): Promise<void> {
+  if (!FLEET_CONTROL_PLANE.isConfigured()) {
+    throw new Error("MOTTO_MCP_URL or MOTTO_MCP_AUTH_TOKEN is missing.");
+  }
+  if (!fleetRegistrationPromise) {
+    fleetRegistrationPromise = (async () => {
+      await FLEET_CONTROL_PLANE.registerAgent({
+        name: FLEET_AGENT_NAME,
+        kind: "variable",
+        deploy_target: "hostinger:8150",
+        version: VERSION,
+      });
+    })();
+  }
+  try {
+    await fleetRegistrationPromise;
+  } catch (error) {
+    fleetRegistrationPromise = null;
+    throw error;
+  }
+}
+
+async function sendFleetHeartbeat(mode: string, currentProcessFocus: string): Promise<void> {
+  const status = buildHeartbeatStatus(mode, currentProcessFocus);
+  await FLEET_CONTROL_PLANE.heartbeat(FLEET_AGENT_NAME, status);
+  if (mode === "startup") {
+    fleetLifecycleState.startupHeartbeatAt = nowIso();
+  }
+}
+
+async function ensureFleetStartupLifecycle(): Promise<void> {
+  if (fleetLifecycleState.startupAttempted && fleetLifecycleState.startupHeartbeatAt) return;
+  const correlationId = normalizeCorrelationId("STARTUP");
+  fleetLifecycleState.startupAttempted = true;
+  try {
+    await ensureFleetRegistered();
+    await sendFleetHeartbeat("startup", "service_bootstrap");
+  } catch (error) {
+    queueFleetRetry("startup_registration_or_heartbeat", correlationId, null, error);
+  }
+}
+
+function buildStructuredPlan(args: BusinessManagementCycleArgs, correlationId: string, observedAt: string) {
+  const observations = asArray(args.observations);
+  const proposedActions = asArray(args.proposed_actions);
+  const capabilityGaps = asArray(args.capability_gaps);
+  const planInput = args.plan;
+  if (planInput && typeof planInput === "object" && !Array.isArray(planInput)) {
+    return {
+      ...asRecord(planInput),
+      correlation_id: correlationId,
+      generated_at: observedAt,
+    };
+  }
+  if (typeof planInput === "string" && planInput.trim().length > 0) {
+    return {
+      correlation_id: correlationId,
+      generated_at: observedAt,
+      objective: args.objective,
+      narrative: redactSecrets(planInput),
+    };
+  }
+  return {
+    correlation_id: correlationId,
+    generated_at: observedAt,
+    objective: args.objective,
+    summary: "Structured plan synthesized from cycle inputs.",
+    next_steps: [
+      { step: "Review observations", count: observations.length, priority: "high", status: "ready" },
+      { step: "Execute proposed actions", count: proposedActions.length, priority: "high", status: "awaiting_approval" },
+      { step: "Address capability gaps", count: capabilityGaps.length, priority: "medium", status: "blocked" },
+      { step: "Capture learning outcomes", priority: "medium", status: "ready" },
+    ],
+  };
 }
 
 // ─── Tool definitions ──────────────────────────────────────────────
@@ -271,6 +474,43 @@ const tools: Tool[] = [
         context: { type: "string", description: "Additional context or constraints" },
       },
       required: ["goal"],
+    },
+  },
+  {
+    name: "business_management_cycle",
+    description: "Run a structured business-management cycle that writes fleet run boundaries, heartbeats, events, and artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        objective: { type: "string", description: "Cycle objective or focus area." },
+        correlation_id: { type: "string", description: "Validation correlation ID shared across all generated fleet records." },
+        observations: { type: "array", items: { type: "object" }, description: "Observed business signals for this cycle." },
+        plan: { type: "object", description: "Optional structured plan payload. If omitted, Hermes synthesizes one." },
+        proposed_actions: { type: "array", items: { type: "object" }, description: "Proposed actions for this cycle." },
+        capability_gaps: { type: "array", items: { type: "object" }, description: "Capability blockers and missing prerequisites." },
+        validation_evidence: {
+          oneOf: [
+            { type: "array", items: { type: "object" } },
+            { type: "object" },
+          ],
+          description: "Validation evidence entries tied to this cycle.",
+        },
+        learnings: { type: "array", items: { type: "object" }, description: "Learnings captured from the cycle." },
+        pending_approvals: { type: "number", description: "Count of pending approvals associated with the cycle." },
+        blocked_capabilities: { type: "array", items: { type: "string" }, description: "Currently blocked capabilities for heartbeat metadata." },
+      },
+      required: ["objective"],
+    },
+  },
+  {
+    name: "fleet_get_run_details",
+    description: "Retrieve a fleet run and parse structured artifact bodies recorded by Hermes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        run_id: { type: "string", description: "Fleet run UUID to fetch via the control plane." },
+      },
+      required: ["run_id"],
     },
   },
 ];
@@ -472,6 +712,262 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
   return { content: [{ type: "text", text: `${planRecord}\n\n---\nStored [${id}]` }] };
 }
 
+function tryParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function validationEvidenceEntries(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") return [value];
+  return [];
+}
+
+async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) {
+  const objective = redactSecrets((args.objective ?? "").trim());
+  if (!objective) {
+    return { content: [{ type: "text", text: "Error: objective is required" }], isError: true };
+  }
+
+  const correlationId = normalizeCorrelationId(args.correlation_id);
+  const observedAt = nowIso();
+  fleetLifecycleState.pendingApprovals = asNonNegativeInt(args.pending_approvals, 0);
+  fleetLifecycleState.blockedCapabilities = asStringArray(args.blocked_capabilities);
+
+  await ensureFleetStartupLifecycle();
+  if (!FLEET_CONTROL_PLANE.isConfigured()) {
+    const message = "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
+    queueFleetRetry("cycle_preflight", correlationId, null, message);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: message }, null, 2) }],
+      isError: true,
+    };
+  }
+
+  try {
+    await ensureFleetRegistered();
+  } catch (error) {
+    queueFleetRetry("register_agent", correlationId, null, error);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: "Failed to register Hermes with fleet." }, null, 2) }],
+      isError: true,
+    };
+  }
+
+  try {
+    await sendFleetHeartbeat("cycle_start", objective);
+  } catch (error) {
+    queueFleetRetry("heartbeat_cycle_start", correlationId, null, error);
+  }
+
+  let runId: string | null = null;
+  try {
+    const runStart = await FLEET_CONTROL_PLANE.recordRunStart({
+      agent_name: FLEET_AGENT_NAME,
+      kind: "business-management-cycle",
+      intent: `${objective} [${correlationId}]`,
+    });
+    runId = String(asRecord(runStart).run_id ?? "");
+    if (!runId) throw new Error("record_run_start did not return run_id");
+  } catch (error) {
+    queueFleetRetry("record_run_start", correlationId, null, error);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: "Failed to start fleet run." }, null, 2) }],
+      isError: true,
+    };
+  }
+
+  const plan = buildStructuredPlan(args, correlationId, observedAt);
+  const observations = asArray(args.observations);
+  const proposedActions = asArray(args.proposed_actions);
+  const capabilityGaps = asArray(args.capability_gaps);
+  const validationEvidence = validationEvidenceEntries(args.validation_evidence);
+  const learnings = asArray(args.learnings);
+
+  const sectionPayloads: Array<{ section: string; event_kind: string; artifact_kind: string; data: unknown; level?: string }> = [
+    { section: "observations", event_kind: "cycle.observations", artifact_kind: "business_observations", data: observations },
+    { section: "plan", event_kind: "cycle.plan", artifact_kind: "business_plan", data: plan },
+    { section: "proposed_actions", event_kind: "cycle.proposed_actions", artifact_kind: "business_proposed_actions", data: proposedActions },
+    { section: "capability_gaps", event_kind: "cycle.capability_gaps", artifact_kind: "business_capability_gaps", data: capabilityGaps, level: "warn" },
+    { section: "validation_evidence", event_kind: "cycle.validation_evidence", artifact_kind: "business_validation_evidence", data: validationEvidence },
+    { section: "learnings", event_kind: "cycle.learnings", artifact_kind: "business_learnings", data: learnings },
+  ];
+
+  const emittedSections: Array<Record<string, unknown>> = [];
+  const cycleErrors: string[] = [];
+
+  for (const section of sectionPayloads) {
+    const eventPayload = {
+      correlation_id: correlationId,
+      objective,
+      section: section.section,
+      generated_at: observedAt,
+      run_id: runId,
+      data: section.data,
+    };
+
+    let eventId: number | null = null;
+    try {
+      const eventRes = await FLEET_CONTROL_PLANE.recordEvent({
+        agent_name: FLEET_AGENT_NAME,
+        kind: section.event_kind,
+        payload: eventPayload,
+        run_id: runId,
+        level: section.level ?? "info",
+      });
+      const rawEventId = asRecord(eventRes).event_id;
+      eventId = typeof rawEventId === "number" ? rawEventId : null;
+    } catch (error) {
+      const msg = `record_event(${section.section}) failed`;
+      cycleErrors.push(msg);
+      queueFleetRetry(msg, correlationId, runId, error);
+    }
+
+    let artifactId: number | null = null;
+    const artifactBody = JSON.stringify(eventPayload, null, 2);
+    try {
+      const artifactRes = await FLEET_CONTROL_PLANE.recordArtifactContent({
+        agent_name: FLEET_AGENT_NAME,
+        kind: section.artifact_kind,
+        name: `${correlationId}-${section.section}.json`,
+        body: artifactBody,
+        run_id: runId,
+        intent: objective,
+        repo: BUILD_INFO.repository,
+        meta: {
+          correlation_id: correlationId,
+          run_id: runId,
+          section: section.section,
+          structured: true,
+          generated_at: observedAt,
+        },
+      });
+      const rawArtifactId = asRecord(artifactRes).artifact_id;
+      artifactId = typeof rawArtifactId === "number" ? rawArtifactId : null;
+    } catch (error) {
+      const msg = `record_artifact_content(${section.section}) failed`;
+      cycleErrors.push(msg);
+      queueFleetRetry(msg, correlationId, runId, error);
+    }
+
+    emittedSections.push({
+      section: section.section,
+      event_id: eventId,
+      artifact_id: artifactId,
+      body_format: "json",
+    });
+  }
+
+  const businessPmOutput = {
+    correlation_id: correlationId,
+    run_id: runId,
+    objective,
+    generated_at: observedAt,
+    event_artifact_map: emittedSections,
+    pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+  };
+
+  try {
+    const pmOutputRes = await FLEET_CONTROL_PLANE.recordArtifactContent({
+      agent_name: FLEET_AGENT_NAME,
+      kind: "business_pm_output",
+      name: `${correlationId}-business-pm-output.json`,
+      body: JSON.stringify(businessPmOutput, null, 2),
+      run_id: runId,
+      intent: objective,
+      repo: BUILD_INFO.repository,
+      meta: { correlation_id: correlationId, run_id: runId, section: "business_pm_output", structured: true },
+    });
+    emittedSections.push({
+      section: "business_pm_output",
+      event_id: null,
+      artifact_id: asRecord(pmOutputRes).artifact_id ?? null,
+      body_format: "json",
+    });
+  } catch (error) {
+    const msg = "record_artifact_content(business_pm_output) failed";
+    cycleErrors.push(msg);
+    queueFleetRetry(msg, correlationId, runId, error);
+  }
+
+  const finalStatus: "success" | "error" = cycleErrors.length === 0 ? "success" : "error";
+
+  try {
+    await FLEET_CONTROL_PLANE.recordRunEnd({
+      run_id: runId,
+      status: finalStatus,
+      summary: {
+        correlation_id: correlationId,
+        objective,
+        emitted_sections: emittedSections,
+        errors: cycleErrors,
+        pending_retry_count: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId).length,
+      },
+    });
+  } catch (error) {
+    queueFleetRetry("record_run_end", correlationId, runId, error);
+  }
+
+  fleetLifecycleState.lastLearnCycle = observedAt;
+  try {
+    await sendFleetHeartbeat(finalStatus === "success" ? "idle" : "degraded", objective);
+  } catch (error) {
+    queueFleetRetry("heartbeat_cycle_end", correlationId, runId, error);
+  }
+
+  const cycleResult = {
+    status: finalStatus === "success" ? "ok" : "degraded",
+    correlation_id: correlationId,
+    run_id: runId,
+    emitted_sections: emittedSections,
+    errors: cycleErrors,
+    heartbeat: buildHeartbeatStatus(finalStatus === "success" ? "idle" : "degraded", objective),
+  };
+
+  return {
+    content: [{ type: "text", text: JSON.stringify(redactMetadata(cycleResult), null, 2) }],
+    isError: finalStatus !== "success",
+  };
+}
+
+async function handleFleetGetRunDetails(args: { run_id: string }) {
+  const runId = (args.run_id ?? "").trim();
+  if (!runId) {
+    return { content: [{ type: "text", text: "Error: run_id is required" }], isError: true };
+  }
+  if (!FLEET_CONTROL_PLANE.isConfigured()) {
+    return { content: [{ type: "text", text: "Error: fleet control plane is not configured" }], isError: true };
+  }
+
+  try {
+    const runBundle = asRecord(await FLEET_CONTROL_PLANE.getRun(runId));
+    const artifacts = asArray(runBundle.artifacts).map((artifact) => {
+      const artifactRecord = asRecord(artifact);
+      const content = asRecord(artifactRecord.content);
+      const body = typeof content.body === "string" ? content.body : "";
+      return {
+        ...artifactRecord,
+        content: {
+          ...content,
+          parsed_body: typeof body === "string" && body.length > 0 ? tryParseJson(body) : null,
+        },
+      };
+    });
+
+    const response = {
+      ...runBundle,
+      artifacts,
+    };
+    return { content: [{ type: "text", text: JSON.stringify(redactMetadata(response), null, 2) }] };
+  } catch (error) {
+    const message = redactSecrets(error instanceof Error ? error.message : String(error));
+    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+  }
+}
+
 // ─── Dispatch: policy gate + secret redaction + audit ──────────────
 
 type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
@@ -483,6 +979,8 @@ const HANDLERS: Record<string, (a: any) => Promise<ToolResult>> = {
   vps_start_project: handleVpsStartProject, vps_deploy: handleVpsDeploy,
   vps_snapshot: handleVpsSnapshot, vps_restart: handleVpsRestart,
   memory_store: handleMemoryStore, memory_recall: handleMemoryRecall, plan: handlePlan,
+  business_management_cycle: handleBusinessManagementCycle,
+  fleet_get_run_details: handleFleetGetRunDetails,
 };
 
 function redactResult(result: ToolResult): ToolResult {
@@ -557,6 +1055,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 async function main() {
   await initDb();
+  await ensureFleetStartupLifecycle();
 
   const argv = process.argv.slice(2);
   const useHttp = argv.includes("--http");
