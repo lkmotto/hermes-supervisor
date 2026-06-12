@@ -79,6 +79,8 @@ const FLEET_AGENT_NAME = process.env.HERMES_FLEET_AGENT_NAME?.trim() || "hermes"
 const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "managed";
 const MOTTO_SKILLS_TOOLS_DIR = process.env.MOTTO_SKILLS_TOOLS_DIR?.trim() || "/root/motto-skills/tools";
 const MOTTO_KNOWLEDGE_DIR = process.env.MOTTO_KNOWLEDGE_DIR?.trim() || join(homedir(), ".factory", "knowledge");
+const WF1_PROMPT_PATH = "/root/missions/neon-wf1/prompts/wf1_prompt.md";
+const ORDER_INTAKE_WORKER_PATH = "/root/motto-skills/workers/order-intake/src/index.js";
 const FLEET_CONTROL_PLANE = new FleetClient({
   baseUrl: process.env.MOTTO_MCP_URL ?? "",
   authToken: process.env.MOTTO_MCP_AUTH_TOKEN ?? "",
@@ -426,6 +428,112 @@ function asOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function asIdentifier(value: unknown): string | null {
+  const text = asOptionalString(value);
+  if (text) return text;
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
+  return null;
+}
+
+function normalizeHandle(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = normalizeHandle(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+interface SeededWorkflowStep {
+  step_number: number;
+  portal: string;
+  action: string;
+  execution_classification: "headless-safe" | "session-bound";
+}
+
+interface OnlineSeededWorkflowAwareness {
+  loaded_at: string;
+  source_paths: string[];
+  wf1_steps: SeededWorkflowStep[];
+  order_intake_fields: string[];
+  handoff_points: string[];
+}
+
+let cachedOnlineWorkflowAwareness: OnlineSeededWorkflowAwareness | null = null;
+
+function loadOnlineWorkflowAwareness(): OnlineSeededWorkflowAwareness {
+  if (cachedOnlineWorkflowAwareness) return cachedOnlineWorkflowAwareness;
+
+  const sourcePaths: string[] = [];
+  const wf1Steps: SeededWorkflowStep[] = [];
+  const orderIntakeFields: string[] = [];
+  const handoffPoints: string[] = [];
+
+  if (existsSync(WF1_PROMPT_PATH)) {
+    try {
+      const wf1Raw = readFileSync(WF1_PROMPT_PATH, "utf8");
+      sourcePaths.push(WF1_PROMPT_PATH);
+      const stepRegex = /STEP\s+(\d+)\s+([^:]+):\s*(.+)/gi;
+      let match: RegExpExecArray | null;
+      while ((match = stepRegex.exec(wf1Raw)) !== null) {
+        const stepNumber = Number.parseInt(match[1], 10);
+        const portal = match[2].trim();
+        const action = match[3].trim();
+        const executionClassification: "headless-safe" | "session-bound"
+          = /(auth|login|session|desktop|browser|mfa|gmail|matrix|taxnet|mls|comet|sharepoint)/i.test(`${portal} ${action}`)
+            ? "session-bound"
+            : "headless-safe";
+        wf1Steps.push({
+          step_number: Number.isFinite(stepNumber) ? stepNumber : wf1Steps.length + 1,
+          portal,
+          action: redactSecrets(action),
+          execution_classification: executionClassification,
+        });
+      }
+      for (let i = 0; i + 1 < wf1Steps.length; i += 1) {
+        handoffPoints.push(`${wf1Steps[i].portal} -> ${wf1Steps[i + 1].portal}`);
+      }
+    } catch {
+      // Best-effort seeding.
+    }
+  }
+
+  if (existsSync(ORDER_INTAKE_WORKER_PATH)) {
+    try {
+      const orderIntakeRaw = readFileSync(ORDER_INTAKE_WORKER_PATH, "utf8");
+      sourcePaths.push(ORDER_INTAKE_WORKER_PATH);
+      const fieldRegex = /fields\.([a-z_]+)\s*=/g;
+      let match: RegExpExecArray | null;
+      while ((match = fieldRegex.exec(orderIntakeRaw)) !== null) {
+        orderIntakeFields.push(match[1]);
+      }
+    } catch {
+      // Best-effort seeding.
+    }
+  }
+
+  cachedOnlineWorkflowAwareness = {
+    loaded_at: nowIso(),
+    source_paths: sourcePaths,
+    wf1_steps: wf1Steps,
+    order_intake_fields: uniqueStrings(orderIntakeFields),
+    handoff_points: uniqueStrings(handoffPoints),
+  };
+  return cachedOnlineWorkflowAwareness;
 }
 
 type BridgeStoreType = "workflow-library" | "decision-log" | "knowledge-distiller";
@@ -2286,6 +2394,221 @@ function classifyActionRisk(action: Record<string, unknown>): {
   return { risk_level: "low-impact-write", approval_required: false, blocked: false };
 }
 
+type OnlineExecutionClassification = "headless-safe" | "session-bound" | "blocked";
+
+interface AuthSessionNeed {
+  type: "session" | "credential" | "mfa" | "browser_profile" | "tooling" | "capability";
+  handle: string;
+  surface: string;
+}
+
+interface OnlineWorkflowProfile {
+  is_online_workflow: boolean;
+  portal_surface: string | null;
+  execution_classification: OnlineExecutionClassification;
+  classification_reason: string;
+  missing_prerequisites: string[];
+  auth_session_needs: AuthSessionNeed[];
+  blocked_missing_capability: boolean;
+  requires_local_task: boolean;
+}
+
+const ONLINE_SURFACE_DEFAULT_CAPABILITY: Record<string, string> = {
+  gmail: "gmail_authenticated_session",
+  matrix_mls: "matrix_mls_authenticated_session",
+  taxnetusa: "taxnetusa_authenticated_session",
+  county_cad: "county_cad_access",
+  comet_browser: "comet_browser_desktop_session",
+  sharepoint_onedrive: "sharepoint_authenticated_session",
+  portal_generic: "portal_authenticated_session",
+};
+
+function detectPortalSurface(action: Record<string, unknown>): string | null {
+  const material = [
+    asOptionalString(action.portal),
+    asOptionalString(action.surface),
+    asOptionalString(action.action),
+    asOptionalString(action.type),
+    asOptionalString(action.kind),
+    asOptionalString(action.description),
+    asOptionalString(action.summary),
+    asOptionalString(action.tool),
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(" ")
+    .toLowerCase();
+
+  if (!material) return null;
+  if (/gmail|mail\.google/.test(material)) return "gmail";
+  if (/matrix|mls|ntrdd/.test(material)) return "matrix_mls";
+  if (/taxnet/.test(material)) return "taxnetusa";
+  if (/\bcad\b|dallascad|county\s+cad/.test(material)) return "county_cad";
+  if (/comet|opera\s+neon|browser/.test(material)) return "comet_browser";
+  if (/sharepoint|onedrive/.test(material)) return "sharepoint_onedrive";
+  if (/portal|session|auth|login/.test(material)) return "portal_generic";
+  return null;
+}
+
+function inferMissingPrerequisites(action: Record<string, unknown>, portalSurface: string | null): string[] {
+  const explicit: string[] = [];
+
+  explicit.push(...asStringArray(action.missing_prerequisites));
+  explicit.push(...asStringArray(action.required_capabilities));
+  const singleFields = [
+    asOptionalString(action.missing_prerequisite),
+    asOptionalString(action.required_capability),
+    asOptionalString(action.required_session),
+    asOptionalString(action.required_credential),
+  ].filter((entry): entry is string => Boolean(entry));
+  explicit.push(...singleFields);
+
+  const inferredFlags = [
+    asBool(action.requires_session, false),
+    asBool(action.session_required, false),
+    asBool(action.auth_required, false),
+    asBool(action.login_required, false),
+    asBool(action.desktop_required, false),
+    asBool(action.browser_required, false),
+  ].some(Boolean);
+
+  const text = [
+    asOptionalString(action.action),
+    asOptionalString(action.type),
+    asOptionalString(action.kind),
+    asOptionalString(action.description),
+    asOptionalString(action.summary),
+    asOptionalString(action.reason),
+    asOptionalString(action.blocker),
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(" ")
+    .toLowerCase();
+
+  const indicatesMissing = /missing|unavailable|not\s+authenticated|no\s+session|login\s+required|mfa|captcha|blocked/.test(text);
+  const defaultCapability = portalSurface ? ONLINE_SURFACE_DEFAULT_CAPABILITY[portalSurface] : null;
+
+  if (explicit.length === 0 && (inferredFlags || indicatesMissing) && defaultCapability) {
+    explicit.push(defaultCapability);
+  }
+  return uniqueStrings(explicit);
+}
+
+function inferAuthSessionNeeds(portalSurface: string, prerequisites: string[]): AuthSessionNeed[] {
+  const needs: AuthSessionNeed[] = [];
+  for (const prerequisite of prerequisites) {
+    const normalized = normalizeHandle(prerequisite);
+    if (!normalized) continue;
+    let type: AuthSessionNeed["type"] = "capability";
+    if (/session|cookie|auth/.test(normalized)) type = "session";
+    else if (/credential|password|oauth|token|login/.test(normalized)) type = "credential";
+    else if (/mfa|captcha|otp|2fa/.test(normalized)) type = "mfa";
+    else if (/browser|profile|comet|neon/.test(normalized)) type = "browser_profile";
+    else if (/tool|mcp/.test(normalized)) type = "tooling";
+    needs.push({ type, handle: normalized, surface: portalSurface });
+  }
+  return needs;
+}
+
+function classifyOnlineWorkflowStep(
+  action: Record<string, unknown>,
+  risk: { blocked: boolean; blocked_reason?: string },
+): OnlineWorkflowProfile {
+  const portalSurface = detectPortalSurface(action);
+  const material = [
+    asOptionalString(action.action),
+    asOptionalString(action.type),
+    asOptionalString(action.kind),
+    asOptionalString(action.description),
+    asOptionalString(action.summary),
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(" ")
+    .toLowerCase();
+
+  const readOnlyHint = /research|read|query|list|info|metrics|logs|recall|status|report|analy/.test(material);
+  const sessionHint = /portal|browser|session|auth|login|gmail|matrix|mls|taxnet|cad|comet|sharepoint|onedrive/.test(material);
+  const isOnlineWorkflow = portalSurface !== null || readOnlyHint || sessionHint;
+
+  if (!isOnlineWorkflow) {
+    return {
+      is_online_workflow: false,
+      portal_surface: null,
+      execution_classification: "headless-safe",
+      classification_reason: "non-online or unspecified action",
+      missing_prerequisites: [],
+      auth_session_needs: [],
+      blocked_missing_capability: false,
+      requires_local_task: false,
+    };
+  }
+
+  const normalizedSurface = portalSurface ?? "portal_generic";
+  const missingPrerequisites = inferMissingPrerequisites(action, normalizedSurface);
+  const authSessionNeeds = inferAuthSessionNeeds(normalizedSurface, missingPrerequisites);
+  const blockedMissingCapability = missingPrerequisites.length > 0;
+
+  if (blockedMissingCapability || (risk.blocked && sessionHint)) {
+    return {
+      is_online_workflow: true,
+      portal_surface: normalizedSurface,
+      execution_classification: "blocked",
+      classification_reason: blockedMissingCapability
+        ? "missing credential/session/tool prerequisite"
+        : (risk.blocked_reason ?? "policy blocked"),
+      missing_prerequisites: missingPrerequisites,
+      auth_session_needs: authSessionNeeds,
+      blocked_missing_capability: blockedMissingCapability,
+      requires_local_task: true,
+    };
+  }
+
+  if (sessionHint) {
+    return {
+      is_online_workflow: true,
+      portal_surface: normalizedSurface,
+      execution_classification: "session-bound",
+      classification_reason: "requires authenticated browser/desktop execution surface",
+      missing_prerequisites: missingPrerequisites,
+      auth_session_needs: authSessionNeeds,
+      blocked_missing_capability: false,
+      requires_local_task: true,
+    };
+  }
+
+  return {
+    is_online_workflow: true,
+    portal_surface: normalizedSurface,
+    execution_classification: "headless-safe",
+    classification_reason: "headless-safe read/research step",
+    missing_prerequisites: [],
+    auth_session_needs: [],
+    blocked_missing_capability: false,
+    requires_local_task: false,
+  };
+}
+
+function capabilityGapByBlockerKey(blockerKey: string): { memory_id: string | null; request_id: string | null } | null {
+  try {
+    const stmt = db.prepare(
+      "SELECT id, metadata FROM memories WHERE category = 'capability_gap' AND metadata LIKE ? ORDER BY created_at DESC LIMIT 1",
+    );
+    stmt.bind([`%\"blocker_key\":\"${blockerKey}\"%`]);
+    if (!stmt.step()) {
+      stmt.free();
+      return null;
+    }
+    const row = stmt.getAsObject() as Record<string, unknown>;
+    stmt.free();
+    const metadata = parseMetadata(row.metadata);
+    return {
+      memory_id: asIdentifier(row.id),
+      request_id: asIdentifier(metadata.capability_request_id),
+    };
+  } catch {
+    return null;
+  }
+}
+
 type ObservationFactLabel = "fact" | "assumption";
 
 function normalizeObservationFactLabel(raw: unknown): ObservationFactLabel | null {
@@ -2657,6 +2980,36 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   );
   const workflowCandidateRecords: Array<Record<string, unknown>> = [];
   const workflowDerivedCapabilityGaps: Array<Record<string, unknown>> = [];
+  const seededWorkflowAwareness = loadOnlineWorkflowAwareness();
+  let seededWorkflowRecord: Record<string, unknown> | null = null;
+
+  if (seededWorkflowAwareness.source_paths.length > 0) {
+    const seeded = storeTypedMemoryRecord({
+      category: "workflow",
+      content: `Seeded appraisal workflow awareness from WF1/order-intake assets (${seededWorkflowAwareness.wf1_steps.length} steps, ${seededWorkflowAwareness.order_intake_fields.length} intake fields).`,
+      metadata: {
+        source: "wf1_order_intake_assets",
+        source_paths: seededWorkflowAwareness.source_paths,
+        wf1_steps: seededWorkflowAwareness.wf1_steps,
+        order_intake_fields: seededWorkflowAwareness.order_intake_fields,
+        handoff_points: seededWorkflowAwareness.handoff_points,
+      },
+      trace: {
+        source: "wf1_order_intake_assets",
+        correlationId,
+        runId,
+        timestamp: observedAt,
+        confidence: "high",
+      },
+    });
+    seededWorkflowRecord = {
+      memory_id: seeded.id,
+      category: seeded.category,
+      source_paths: seededWorkflowAwareness.source_paths,
+      wf1_step_count: seededWorkflowAwareness.wf1_steps.length,
+      intake_field_count: seededWorkflowAwareness.order_intake_fields.length,
+    };
+  }
 
   for (let i = 0; i < workflowSummaries.length; i += 1) {
     const summary = workflowSummaries[i];
@@ -2714,6 +3067,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       handoffs: workflowSummaries.flatMap((summary) => summary.handoffs),
       blockers: workflowSummaries.flatMap((summary) => summary.blockers),
       capability_gaps: workflowDerivedCapabilityGaps,
+      seeded_asset_awareness: {
+        source_paths: seededWorkflowAwareness.source_paths,
+        wf1_steps: seededWorkflowAwareness.wf1_steps,
+        order_intake_fields: seededWorkflowAwareness.order_intake_fields,
+        handoff_points: seededWorkflowAwareness.handoff_points,
+        seeded_record: seededWorkflowRecord,
+      },
     },
     consumed_intents_count: consumedInboundIntents.length,
     correlation_id: correlationId,
@@ -2960,6 +3320,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     generated_at: observedAt,
     cited_records: citedRecordIds,
     cited_bridged_knowledge: citedBridgeIds,
+    seeded_workflow_awareness: {
+      source_paths: seededWorkflowAwareness.source_paths,
+      wf1_step_count: seededWorkflowAwareness.wf1_steps.length,
+      order_intake_field_count: seededWorkflowAwareness.order_intake_fields.length,
+      handoff_count: seededWorkflowAwareness.handoff_points.length,
+      seeded_record_id: asOptionalString(seededWorkflowRecord?.memory_id),
+    },
     inbound_intent_ids: consumedInboundIntents
       .map((intent) => asRecord(intent).intent_id)
       .filter((id): id is string => typeof id === "string" && id.length > 0),
@@ -2967,8 +3334,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     unknown_signals: unknownSignals,
     actions: planActions,
     summary: recalledMemories.length > 0
-      ? `Plan synthesized with ${recalledMemories.length} recalled memory records, ${recalledBridgeReferences.length} bridged references, and ${learningInfluencedChanges.length} learning-driven adjustment(s).`
-      : "Plan synthesized from current observations and objective without prior context.",
+      ? `Plan synthesized with ${recalledMemories.length} recalled memory records, ${recalledBridgeReferences.length} bridged references, and ${learningInfluencedChanges.length} learning-driven adjustment(s). Seeded WF1/order-intake assets informed online workflow awareness.`
+      : "Plan synthesized from current observations/objective and seeded WF1/order-intake workflow assets.",
   };
 
   // ════════════════════════════════════════════════════════════════
@@ -2983,11 +3350,22 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const signaledIntents: Array<Record<string, unknown>> = [];
   const queuedLocalTasks: Array<Record<string, unknown>> = [];
   const filedCapabilityRequests: Array<Record<string, unknown>> = [...unknownSignalCapabilityRequests];
+  const onlineStepClassifications: Array<Record<string, unknown>> = [];
+  const onlineObservationRecords: Array<Record<string, unknown>> = [];
+  const cycleBlockerRequestMap = new Map<string, string | null>();
 
   for (let i = 0; i < proposedActions.length; i++) {
     const action = asRecord(proposedActions[i]);
     const riskClassification = classifyActionRisk(action);
+    const onlineProfile = classifyOnlineWorkflowStep(action, riskClassification);
     const actionReference = asOptionalString(action.action ?? action.type ?? action.kind) ?? `proposed_action_${i}`;
+    let actionStatus = riskClassification.blocked ? "awaiting_approval" : (asOptionalString(action.status) ?? "ready");
+    if (onlineProfile.blocked_missing_capability) {
+      actionStatus = "blocked_missing_capability";
+    } else if (onlineProfile.execution_classification === "session-bound" && !riskClassification.blocked) {
+      actionStatus = "queued_local_task";
+    }
+
     const proposalLink: Record<string, unknown> = {
       action_index: i,
       action_reference: actionReference,
@@ -3003,21 +3381,43 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       risk_level: riskClassification.risk_level,
       approval_required: riskClassification.approval_required,
       expected_outcome: asOptionalString(action.expected_outcome) ?? asOptionalString(action.description) ?? `Outcome of action: ${actionReference}`,
-      status: riskClassification.blocked ? "awaiting_approval" : (asOptionalString(action.status) ?? "ready"),
+      status: actionStatus,
+      execution_classification: onlineProfile.execution_classification,
+      portal_surface: onlineProfile.portal_surface,
+      missing_prerequisites: onlineProfile.missing_prerequisites,
+      auth_session_needs: onlineProfile.auth_session_needs,
+      classification_reason: onlineProfile.classification_reason,
       correlation_id: correlationId,
     };
 
     classifiedActions.push(classifiedAction);
 
-    if (riskClassification.blocked) {
+    if (onlineProfile.is_online_workflow) {
+      onlineStepClassifications.push({
+        action_index: i,
+        action_reference: actionReference,
+        execution_classification: onlineProfile.execution_classification,
+        portal_surface: onlineProfile.portal_surface,
+        classification_reason: onlineProfile.classification_reason,
+        missing_prerequisites: onlineProfile.missing_prerequisites,
+        correlation_id: correlationId,
+      });
+    }
+
+    const isBlocked = riskClassification.blocked || onlineProfile.blocked_missing_capability;
+    if (isBlocked) {
       blockedActions.push({
         action_reference: actionReference,
         risk_level: riskClassification.risk_level,
-        blocked_reason: riskClassification.blocked_reason ?? "Action requires approval",
+        blocked_reason: onlineProfile.blocked_missing_capability
+          ? `Missing online workflow prerequisites: ${onlineProfile.missing_prerequisites.join(", ")}`
+          : (riskClassification.blocked_reason ?? "Action requires approval"),
         original_action: action,
         correlation_id: correlationId,
       });
+    }
 
+    if (riskClassification.blocked) {
       // Persist an approval request in memory
       const approvalMemory = storeTypedMemoryRecord({
         category: "approval_request",
@@ -3048,7 +3448,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       proposalLink.link_status = "approval_requested";
 
       // Create a capability request for the blocked action if it needs a specific capability
-      if (riskClassification.risk_level === "dangerous-global-mutation" && FLEET_CONTROL_PLANE.isConfigured()) {
+      if (riskClassification.risk_level === "dangerous-global-mutation"
+        && FLEET_CONTROL_PLANE.isConfigured()
+        && !onlineProfile.is_online_workflow) {
         try {
           if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "propose")) {
             const capabilityResult = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
@@ -3056,7 +3458,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
               justification: `[${correlationId}] Action "${actionReference}" is classified as ${riskClassification.risk_level} and requires explicit human approval: ${riskClassification.blocked_reason ?? "policy requires approval"}`,
               requested_by: FLEET_AGENT_NAME,
             }));
-            const capabilityRequestId = capabilityResult.id ?? capabilityResult.request_id ?? null;
+            const capabilityRequestId = asIdentifier(capabilityResult.id) ?? asIdentifier(capabilityResult.request_id);
             filedCapabilityRequests.push({
               capability: `approval_for_${riskClassification.risk_level}_action`,
               request_id: capabilityRequestId,
@@ -3072,46 +3474,164 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           queueFleetRetry("request_capability", correlationId, runId, error);
         }
       }
+    }
 
-      // Queue a local task for browser/session-bound actions
-      if (riskClassification.risk_level === "dangerous-global-mutation" && FLEET_CONTROL_PLANE.isConfigured()) {
-        const actionTypeLower = (asOptionalString(action.type ?? action.action ?? action.kind) ?? "").toLowerCase();
-        if (/browser|portal|session|gmail|taxnet|matrix|mls|cad|comet/i.test(actionTypeLower)) {
-          try {
-            if (!shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "propose")) {
-              const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
-                kind: "browser",
-                payload: {
-                  ...action,
-                  correlation_id: correlationId,
-                  run_id: runId,
-                  objective,
-                  risk_level: riskClassification.risk_level,
-                  queued_at: observedAt,
-                  created_by: FLEET_AGENT_NAME,
-                },
-                description: `Browser/session-bound task for ${objective}: ${asOptionalString(action.action ?? action.type ?? action.kind) ?? `action-${i + 1}`}`,
-                source: FLEET_AGENT_NAME,
-                dedup_key: `${correlationId}:blocked:${i}:${actionTypeLower}`,
-                ttl_seconds: 600,
-              }));
-              const localTaskId = queued.task_id ?? queued.id ?? queued.local_task_id ?? null;
-              queuedLocalTasks.push({
-                task_id: localTaskId,
-                kind: "browser",
-                source: FLEET_AGENT_NAME,
-                status: queued.status ?? queued.state ?? null,
-                reason: "blocked_browser_action",
-                action_reference: actionReference,
-              });
-              proposalLink.local_task_id = localTaskId;
-            }
-          } catch (error) {
-            cycleErrors.push(`queue_local_task for blocked action ${i} failed`);
-            queueFleetRetry("queue_local_task", correlationId, runId, error);
+    if (onlineProfile.is_online_workflow && onlineProfile.missing_prerequisites.length > 0 && onlineProfile.portal_surface) {
+      const blockerKey = normalizeHandle(`${onlineProfile.portal_surface}:${onlineProfile.missing_prerequisites.join("|")}`);
+      const existingFromCycle = cycleBlockerRequestMap.get(blockerKey);
+      const existingFromMemory = capabilityGapByBlockerKey(blockerKey);
+      const knownRequestId = existingFromCycle ?? existingFromMemory?.request_id ?? null;
+      let capabilityRequestId: string | null = knownRequestId;
+      let capabilityRequestStatus = knownRequestId ? "reused_existing" : "pending";
+      const primaryCapability = onlineProfile.missing_prerequisites[0]
+        ?? ONLINE_SURFACE_DEFAULT_CAPABILITY[onlineProfile.portal_surface]
+        ?? "portal_authenticated_session";
+
+      if (!knownRequestId && FLEET_CONTROL_PLANE.isConfigured()) {
+        try {
+          if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "online_workflow")) {
+            const capabilityResult = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
+              capability: primaryCapability,
+              justification: `[${correlationId}] ${onlineProfile.portal_surface} workflow step "${actionReference}" is blocked by missing prerequisite(s): ${onlineProfile.missing_prerequisites.join(", ")}.`,
+              requested_by: FLEET_AGENT_NAME,
+            }));
+            capabilityRequestId = asIdentifier(capabilityResult.id) ?? asIdentifier(capabilityResult.request_id);
+            capabilityRequestStatus = asOptionalString(capabilityResult.status) ?? "pending";
+            cycleBlockerRequestMap.set(blockerKey, capabilityRequestId ?? null);
+          }
+        } catch (error) {
+          cycleErrors.push(`request_capability for online blocker ${i} failed`);
+          queueFleetRetry("request_capability", correlationId, runId, error);
+        }
+      } else {
+        cycleBlockerRequestMap.set(blockerKey, capabilityRequestId ?? null);
+      }
+
+      filedCapabilityRequests.push({
+        capability: primaryCapability,
+        request_id: capabilityRequestId,
+        status: capabilityRequestStatus,
+        requested_by: FLEET_AGENT_NAME,
+        source: capabilityRequestStatus === "reused_existing" ? "online_portal_prerequisite_reused" : "online_portal_prerequisite",
+        portal_surface: onlineProfile.portal_surface,
+        blocker_key: blockerKey,
+        prerequisites: onlineProfile.missing_prerequisites,
+        auth_session_needs: onlineProfile.auth_session_needs,
+        action_reference: actionReference,
+      });
+
+      const gapMemory = storeTypedMemoryRecord({
+        category: "capability_gap",
+        content: `[${correlationId}] Online workflow blocker for ${onlineProfile.portal_surface}: ${onlineProfile.missing_prerequisites.join(", ")}.`,
+        metadata: {
+          source: "online_workflow_blocker",
+          blocker_key: blockerKey,
+          capability: primaryCapability,
+          capability_request_id: capabilityRequestId,
+          portal_surface: onlineProfile.portal_surface,
+          prerequisite_types: onlineProfile.missing_prerequisites,
+          auth_session_needs: onlineProfile.auth_session_needs,
+          action_reference: actionReference,
+          blocker_status: onlineProfile.blocked_missing_capability ? "blocked" : "session-bound",
+        },
+        trace: {
+          source: "online_workflow_blocker",
+          correlationId,
+          runId,
+          timestamp: observedAt,
+          confidence: "high",
+        },
+      });
+
+      proposalLink.capability_request_id = capabilityRequestId;
+      proposalLink.capability_gap_memory_id = gapMemory.id;
+      proposalLink.blocker_key = blockerKey;
+      if (proposalLink.link_status === "classified") {
+        proposalLink.link_status = capabilityRequestStatus === "reused_existing"
+          ? "capability_reused"
+          : "capability_requested";
+      }
+    }
+
+    if (onlineProfile.requires_local_task && FLEET_CONTROL_PLANE.isConfigured() && !proposalLink.local_task_id) {
+      const portal = onlineProfile.portal_surface ?? "portal_generic";
+      const blockerKey = normalizeHandle(`${portal}:${onlineProfile.missing_prerequisites.join("|") || actionReference}`);
+      try {
+        if (!shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "propose")) {
+          const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
+            kind: "browser",
+            payload: {
+              action_reference: actionReference,
+              action_index: i,
+              portal_surface: portal,
+              execution_classification: onlineProfile.execution_classification,
+              auth_session_needs: onlineProfile.auth_session_needs,
+              missing_prerequisites: onlineProfile.missing_prerequisites,
+              correlation_id: correlationId,
+              run_id: runId,
+              objective,
+              queued_at: observedAt,
+              created_by: FLEET_AGENT_NAME,
+            },
+            description: `Session-bound online step for ${portal}: ${actionReference}`,
+            source: FLEET_AGENT_NAME,
+            dedup_key: `${correlationId}:online:${i}:${blockerKey}`,
+            ttl_seconds: 600,
+          }));
+          const localTaskId = asOptionalString(queued.task_id) ?? asOptionalString(queued.id) ?? asOptionalString(queued.local_task_id);
+          queuedLocalTasks.push({
+            task_id: localTaskId,
+            kind: "browser",
+            source: FLEET_AGENT_NAME,
+            status: queued.status ?? queued.state ?? null,
+            reason: onlineProfile.execution_classification === "blocked" ? "blocked_online_step" : "session_bound_online_step",
+            portal_surface: portal,
+            action_reference: actionReference,
+            auth_session_needs: onlineProfile.auth_session_needs,
+          });
+          proposalLink.local_task_id = localTaskId;
+          if (proposalLink.link_status === "classified") {
+            proposalLink.link_status = "local_task_queued";
           }
         }
+      } catch (error) {
+        cycleErrors.push(`queue_local_task for online action ${i} failed`);
+        queueFleetRetry("queue_local_task", correlationId, runId, error);
       }
+    }
+
+    if (onlineProfile.is_online_workflow) {
+      const onlineRecordCategory: TypedMemoryCategory = onlineProfile.execution_classification === "blocked"
+        ? "capability_gap"
+        : (onlineProfile.execution_classification === "session-bound" ? "workflow" : "learning");
+      const storedOnlineRecord = storeTypedMemoryRecord({
+        category: onlineRecordCategory,
+        content: `[${correlationId}] Online workflow observation for ${actionReference}: ${onlineProfile.execution_classification}.`,
+        metadata: {
+          source: "online_workflow_observation",
+          action_reference: actionReference,
+          portal_surface: onlineProfile.portal_surface,
+          execution_classification: onlineProfile.execution_classification,
+          classification_reason: onlineProfile.classification_reason,
+          missing_prerequisites: onlineProfile.missing_prerequisites,
+          auth_session_needs: onlineProfile.auth_session_needs,
+          objective,
+        },
+        trace: {
+          source: "online_workflow_observation",
+          correlationId,
+          runId,
+          timestamp: observedAt,
+          confidence: onlineProfile.execution_classification === "headless-safe" ? "medium" : "high",
+        },
+      });
+      onlineObservationRecords.push({
+        memory_id: storedOnlineRecord.id,
+        category: storedOnlineRecord.category,
+        action_reference: actionReference,
+        portal_surface: onlineProfile.portal_surface,
+        execution_classification: onlineProfile.execution_classification,
+      });
     }
     proposalRecordLinks.push(proposalLink);
   }
@@ -3276,6 +3796,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const proposeSection = {
     actions: classifiedActions,
     blocked_actions: blockedActions,
+    online_step_classification: onlineStepClassifications,
+    online_observation_records: onlineObservationRecords,
     approval_requests: approvalRequestRecords,
     proposal_records: proposalRecordLinks,
     coordination_intents: signaledIntents,
@@ -3583,6 +4105,25 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         reason: asOptionalString(asRecord(signal).reason) ?? "required signal unavailable",
       })),
     ),
+    online_learning: {
+      classifications: {
+        headless_safe: onlineStepClassifications.filter((step) => asOptionalString(step.execution_classification) === "headless-safe").length,
+        session_bound: onlineStepClassifications.filter((step) => asOptionalString(step.execution_classification) === "session-bound").length,
+        blocked: onlineStepClassifications.filter((step) => asOptionalString(step.execution_classification) === "blocked").length,
+      },
+      continue_safe_learning_when_blocked:
+        onlineStepClassifications.some((step) => asOptionalString(step.execution_classification) === "blocked")
+        ? (
+          onlineStepClassifications.some((step) => asOptionalString(step.execution_classification) === "headless-safe")
+          || seededWorkflowAwareness.wf1_steps.length > 0
+        )
+        : true,
+      blocked_portal_surfaces: uniqueStrings(
+        onlineStepClassifications
+          .filter((step) => asOptionalString(step.execution_classification) === "blocked")
+          .map((step) => asOptionalString(step.portal_surface) ?? "portal_generic"),
+      ),
+    },
     next_steps: planActions.map((pa) => ({
       step: pa.step,
       priority: pa.priority,
