@@ -2782,7 +2782,7 @@ function classifyOnlineWorkflowStep(
     .join(" ")
     .toLowerCase();
 
-  const readOnlyHint = /research|read|query|list|info|metrics|logs|recall|status|report|analy/.test(material);
+  const readOnlyHint = /research|read|query|list|info|metrics|logs|recall|analyze|analytics/.test(material);
   const sessionHint = /portal|browser|session|auth|login|gmail|matrix|mls|taxnet|cad|comet|sharepoint|onedrive/.test(material);
   const isOnlineWorkflow = portalSurface !== null || readOnlyHint || sessionHint;
 
