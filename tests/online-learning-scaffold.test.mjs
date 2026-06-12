@@ -70,7 +70,7 @@ async function testValOnline004SeededAwareness() {
   const seeded = result.perceive?.workflow_summary?.seeded_asset_awareness || {};
   const sourcePaths = seeded.source_paths || [];
   assert(sourcePaths.some((p) => String(p).includes("/root/missions/neon-wf1")), "seeded source paths should include neon-wf1");
-  assert(sourcePaths.some((p) => String(p).includes("/root/motto-skills")), "seeded source paths should include motto-skills");
+  assert(sourcePaths.some((p) => String(p).includes("/opt/motto-skills")), "seeded source paths should include motto-skills");
   assert((seeded.wf1_steps || []).length > 0, "seeded wf1 steps should be extracted");
   assert((seeded.order_intake_fields || []).length > 0, "order-intake fields should be extracted");
   console.log("  PASS: workflow awareness seeded from WF1 and order-intake assets");
