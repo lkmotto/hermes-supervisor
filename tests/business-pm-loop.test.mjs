@@ -41,7 +41,12 @@ async function callTool(name, args) {
   const result = await mcpCall("tools/call", { name, arguments: args });
   const content = result.content?.[0]?.text;
   if (!content) throw new Error(`No content in tool result for ${name}`);
-  return JSON.parse(content);
+  try {
+    return JSON.parse(content);
+  } catch {
+    // Some tools (e.g., memory_store) return plain text, not JSON
+    return { _raw: content };
+  }
 }
 
 function generateCorrelationId() {
