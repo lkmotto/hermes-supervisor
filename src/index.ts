@@ -80,7 +80,7 @@ const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "manag
 const MOTTO_SKILLS_TOOLS_DIR = process.env.MOTTO_SKILLS_TOOLS_DIR?.trim() || "/root/motto-skills/tools";
 const MOTTO_KNOWLEDGE_DIR = process.env.MOTTO_KNOWLEDGE_DIR?.trim() || join(homedir(), ".factory", "knowledge");
 const WF1_PROMPT_PATH = "/root/missions/neon-wf1/prompts/wf1_prompt.md";
-const ORDER_INTAKE_WORKER_PATH = "/root/motto-skills/workers/order-intake/src/index.js";
+const ORDER_INTAKE_WORKER_PATH = "/opt/motto-skills/workers/order-intake/src/index.js";
 const FLEET_CONTROL_PLANE = new FleetClient({
   baseUrl: process.env.MOTTO_MCP_URL ?? "",
   authToken: process.env.MOTTO_MCP_AUTH_TOKEN ?? "",
