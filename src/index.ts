@@ -2340,7 +2340,10 @@ async function handleFleetGetRunDetails(args: { run_id: string }) {
 
 type ActionRiskLevel = "read-only" | "low-impact-write" | "hermes-scoped-mutation" | "dangerous-global-mutation";
 
-function classifyActionRisk(action: Record<string, unknown>): {
+function classifyActionRisk(
+  action: Record<string, unknown>,
+  blockedSignals?: string[],
+): {
   risk_level: ActionRiskLevel;
   approval_required: boolean;
   blocked: boolean;
@@ -2391,16 +2394,18 @@ function classifyActionRisk(action: Record<string, unknown>): {
     return { risk_level: "hermes-scoped-mutation", approval_required: true, blocked: true, blocked_reason: "Hermes-scoped mutation requires validation evidence and approval." };
   }
   if (
-    /submit|send\s+email|purchase|order\s+change|change\s+order|credential\s+change|portal\s+mutation|data\s+mutation|paid\s+(lookup|search|query)|download.*(official|legal|record)/i
+    /submit|send[\s_-]email|purchase|order[\s_-]change|change[\s_-]order|credential[\s_-]change|portal[\s_-]mutation|data[\s_-]mutation|paid\s+(lookup|search|query)|download.*(official|legal|record)/i
       .test(actionMaterial)
   ) {
     return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Business-impacting online mutation requires explicit approval." };
   }
   if (/research|read|query|list|info|metrics|logs|recall|status|report/i.test(actionMaterial)) {
-    return { risk_level: "read-only", approval_required: false, blocked: false };
+    const result = { risk_level: "read-only" as ActionRiskLevel, approval_required: false, blocked: false };
+    return reclassifyPortalIfSignalsBlocked(action, result, blockedSignals);
   }
   if (/store\s+memory|plan|write\s+memory|record|emit|log\s+decision/i.test(actionMaterial)) {
-    return { risk_level: "low-impact-write", approval_required: false, blocked: false };
+    const result = { risk_level: "low-impact-write" as ActionRiskLevel, approval_required: false, blocked: false };
+    return reclassifyPortalIfSignalsBlocked(action, result, blockedSignals);
   }
 
   // Default: if the action mentions mutating keywords, classify as hermes-scoped
@@ -2409,7 +2414,30 @@ function classifyActionRisk(action: Record<string, unknown>): {
   }
 
   // Default to low-impact-write for unspecified actions
-  return { risk_level: "low-impact-write", approval_required: false, blocked: false };
+  const defaultResult = { risk_level: "low-impact-write" as ActionRiskLevel, approval_required: false, blocked: false };
+  return reclassifyPortalIfSignalsBlocked(action, defaultResult, blockedSignals);
+}
+
+function reclassifyPortalIfSignalsBlocked(
+  action: Record<string, unknown>,
+  result: { risk_level: ActionRiskLevel; approval_required: boolean; blocked: boolean; blocked_reason?: string },
+  blockedSignals?: string[],
+): { risk_level: ActionRiskLevel; approval_required: boolean; blocked: boolean; blocked_reason?: string } {
+  if (!result.blocked && blockedSignals && blockedSignals.length > 0) {
+    const actionPortal = detectPortalSurface(action);
+    if (actionPortal) {
+      const blockedPortals = extractBlockedPortalSignals(blockedSignals);
+      if (blockedPortals.has(actionPortal) || blockedPortals.has("portal_generic")) {
+        const signalList = blockedSignals.slice(0, 5).join(", ");
+        return {
+          ...result,
+          blocked: true,
+          blocked_reason: `Portal action on "${actionPortal}" is blocked because required signals are unavailable: ${signalList}`,
+        };
+      }
+    }
+  }
+  return result;
 }
 
 type OnlineExecutionClassification = "headless-safe" | "session-bound" | "blocked";
@@ -2526,6 +2554,23 @@ function detectPortalSurface(action: Record<string, unknown>): string | null {
   if (/sharepoint|onedrive/.test(material)) return "sharepoint_onedrive";
   if (/portal|session|auth|login/.test(material)) return "portal_generic";
   return null;
+}
+
+function extractBlockedPortalSignals(blockedSignals: string[]): Set<string> {
+  const portals = new Set<string>();
+  for (const signal of blockedSignals) {
+    const lower = signal.toLowerCase();
+    if (/taxnet/.test(lower)) portals.add("taxnetusa");
+    if (/gmail|mail/.test(lower)) portals.add("gmail");
+    if (/matrix|mls/.test(lower)) portals.add("matrix_mls");
+    if (/\bcad\b/.test(lower)) portals.add("county_cad");
+    if (/comet|browser/.test(lower)) portals.add("comet_browser");
+    if (/sharepoint|onedrive/.test(lower)) portals.add("sharepoint_onedrive");
+    if (/portal|session|auth/.test(lower) && !/taxnet|gmail|mail|matrix|mls|cad|comet|browser|sharepoint|onedrive/.test(lower)) {
+      portals.add("portal_generic");
+    }
+  }
+  return portals;
 }
 
 function inferMissingPrerequisites(action: Record<string, unknown>, portalSurface: string | null): string[] {
@@ -3728,7 +3773,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
   for (let i = 0; i < proposedActions.length; i++) {
     const action = asRecord(proposedActions[i]);
-    const riskClassification = classifyActionRisk(action);
+    const blockedSignalNames = unknownSignals
+      .map((s) => asOptionalString(asRecord(s).signal))
+      .filter((s): s is string => Boolean(s));
+    const riskClassification = classifyActionRisk(action, blockedSignalNames);
     const onlineProfile = classifyOnlineWorkflowStep(action, riskClassification);
     const actionReference = asOptionalString(action.action ?? action.type ?? action.kind) ?? `proposed_action_${i}`;
     let onlineFailure = classifyOnlineFailureType(action, onlineProfile);
