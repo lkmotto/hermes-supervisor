@@ -1467,6 +1467,11 @@ const tools: Tool[] = [
           description: "Maximum completed local tasks to scan (default 50).",
           default: 50,
         },
+        simulated_local_task_outcomes: {
+          type: "array",
+          items: { type: "object" },
+          description: "Optional validation-only local/browser task outcomes to ingest into learning and planning when live task completion is unavailable.",
+        },
         recall_bridged_limit: {
           type: "number",
           description: "How many recent motto-skills bridge records to include (default 10).",
@@ -2343,7 +2348,17 @@ function classifyActionRisk(action: Record<string, unknown>): {
 } {
   const toolName = asOptionalString(action.tool ?? action.tool_name);
   const actionType = asOptionalString(action.type ?? action.action ?? action.kind) ?? "";
-  const actionTypeLower = actionType.toLowerCase();
+  const actionMaterial = [
+    actionType,
+    asOptionalString(action.description),
+    asOptionalString(action.summary),
+    asOptionalString(action.reason),
+    asOptionalString(action.portal),
+    asOptionalString(action.surface),
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(" ")
+    .toLowerCase();
 
   // If the action references a known tool, use the existing risk policy
   if (toolName && RISK_METADATA[toolName]) {
@@ -2360,33 +2375,36 @@ function classifyActionRisk(action: Record<string, unknown>): {
   }
 
   // Classify by action type keywords
-  if (/restart\s+(full\s+)?vps|vps\s+restart/i.test(actionType)) {
+  if (/restart\s+(full\s+)?vps|vps\s+restart/i.test(actionMaterial)) {
     return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "VPS restart is a dangerous/global action requiring explicit approval." };
   }
-  if (/snapshot/i.test(actionType)) {
+  if (/snapshot/i.test(actionMaterial)) {
     return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "VPS snapshot is a dangerous/global action requiring explicit approval." };
   }
-  if (/stop\s+(project|service)/i.test(actionType) && !/hermes/i.test(actionType)) {
+  if (/stop\s+(project|service)/i.test(actionMaterial) && !/hermes/i.test(actionMaterial)) {
     return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Stopping a non-Hermes project is a dangerous/global action requiring explicit approval." };
   }
-  if (/deploy|restart\s+project|start\s+project/i.test(actionType) && !/hermes/i.test(actionType)) {
+  if (/deploy|restart\s+project|start\s+project/i.test(actionMaterial) && !/hermes/i.test(actionMaterial)) {
     return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Non-Hermes project deployment/control is a dangerous/global action requiring explicit approval." };
   }
-  if (/restart\s+hermes|redeploy\s+hermes|deploy\s+hermes|start\s+hermes/i.test(actionType)) {
+  if (/restart\s+hermes|redeploy\s+hermes|deploy\s+hermes|start\s+hermes/i.test(actionMaterial)) {
     return { risk_level: "hermes-scoped-mutation", approval_required: true, blocked: true, blocked_reason: "Hermes-scoped mutation requires validation evidence and approval." };
   }
-  if (/submit|send\s+email|purchase|order|credential\s+change|portal\s+mutation/i.test(actionType)) {
+  if (
+    /submit|send\s+email|purchase|order\s+change|change\s+order|credential\s+change|portal\s+mutation|data\s+mutation|paid\s+(lookup|search|query)|download.*(official|legal|record)/i
+      .test(actionMaterial)
+  ) {
     return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Business-impacting online mutation requires explicit approval." };
   }
-  if (/research|read|query|list|info|metrics|logs|recall|status|report/i.test(actionType)) {
+  if (/research|read|query|list|info|metrics|logs|recall|status|report/i.test(actionMaterial)) {
     return { risk_level: "read-only", approval_required: false, blocked: false };
   }
-  if (/store\s+memory|plan|write\s+memory|record|emit|log\s+decision/i.test(actionType)) {
+  if (/store\s+memory|plan|write\s+memory|record|emit|log\s+decision/i.test(actionMaterial)) {
     return { risk_level: "low-impact-write", approval_required: false, blocked: false };
   }
 
   // Default: if the action mentions mutating keywords, classify as hermes-scoped
-  if (/restart|deploy|stop|start|create|delete|update|modify|change/i.test(actionType)) {
+  if (/restart|deploy|stop|start|create|delete|update|modify|change/i.test(actionMaterial)) {
     return { risk_level: "hermes-scoped-mutation", approval_required: true, blocked: true, blocked_reason: "Potential mutating action requires approval before execution." };
   }
 
@@ -2413,6 +2431,40 @@ interface OnlineWorkflowProfile {
   requires_local_task: boolean;
 }
 
+type OnlineFailureType =
+  | "auth_failure"
+  | "rate_limit"
+  | "mfa_captcha"
+  | "network_failure"
+  | "provider_error"
+  | "missing_evidence";
+
+interface OnlineFailureDetails {
+  failure_type: OnlineFailureType;
+  blocker_type: string;
+  provider: string | null;
+  message: string;
+  missing_prerequisites: string[];
+  auth_session_needs: AuthSessionNeed[];
+  requires_capability_request: boolean;
+  requires_local_task: boolean;
+}
+
+interface OnlineEvidenceRecord {
+  success_claim: boolean;
+  source: string | null;
+  tool: string | null;
+  task_id: string | null;
+  evidence_id: string | null;
+  timestamp: string;
+  provider: string | null;
+  portal_surface: string | null;
+  result_excerpt: string | null;
+  observed_fields: Record<string, unknown> | null;
+  evidence_complete: boolean;
+  missing_fields: string[];
+}
+
 const ONLINE_SURFACE_DEFAULT_CAPABILITY: Record<string, string> = {
   gmail: "gmail_authenticated_session",
   matrix_mls: "matrix_mls_authenticated_session",
@@ -2422,6 +2474,33 @@ const ONLINE_SURFACE_DEFAULT_CAPABILITY: Record<string, string> = {
   sharepoint_onedrive: "sharepoint_authenticated_session",
   portal_generic: "portal_authenticated_session",
 };
+
+function detectOnlineProvider(action: Record<string, unknown>): string | null {
+  const material = [
+    asOptionalString(action.provider),
+    asOptionalString(action.vendor),
+    asOptionalString(action.tool),
+    asOptionalString(action.tool_name),
+    asOptionalString(action.portal),
+    asOptionalString(action.surface),
+    asOptionalString(action.action),
+    asOptionalString(action.type),
+    asOptionalString(action.description),
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(" ")
+    .toLowerCase();
+  if (!material) return null;
+  if (/perplexity|sonar/.test(material)) return "perplexity";
+  if (/gmail|google/.test(material)) return "gmail";
+  if (/matrix|mls|ntrdd/.test(material)) return "matrix_mls";
+  if (/taxnet/.test(material)) return "taxnetusa";
+  if (/\bcad\b|dallascad|county\s+cad/.test(material)) return "county_cad";
+  if (/comet|opera\s+neon|browser/.test(material)) return "comet_browser";
+  if (/sharepoint|onedrive/.test(material)) return "sharepoint_onedrive";
+  if (/hostinger/.test(material)) return "hostinger";
+  return null;
+}
 
 function detectPortalSurface(action: Record<string, unknown>): string | null {
   const material = [
@@ -2491,6 +2570,139 @@ function inferMissingPrerequisites(action: Record<string, unknown>, portalSurfac
     explicit.push(defaultCapability);
   }
   return uniqueStrings(explicit);
+}
+
+function classifyOnlineFailureType(action: Record<string, unknown>, profile: OnlineWorkflowProfile): OnlineFailureDetails | null {
+  if (!profile.is_online_workflow) return null;
+
+  const status = (asOptionalString(action.status) ?? "").toLowerCase();
+  const details = [
+    asOptionalString(action.error),
+    asOptionalString(action.blocker),
+    asOptionalString(action.failure_reason),
+    asOptionalString(action.provider_error),
+    asOptionalString(action.description),
+    asOptionalString(action.summary),
+    asOptionalString(action.reason),
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(" ");
+  const material = `${status} ${details}`.toLowerCase();
+
+  const explicitFailureType = (asOptionalString(action.failure_type) ?? asOptionalString(action.blocker_type) ?? "")
+    .trim()
+    .toLowerCase();
+  const hasFailureSignal = asBool(action.failed ?? action.is_failed ?? action.error_present, false)
+    || /failed|error|blocked|denied|unauthor|forbidden|rate.?limit|quota|captcha|mfa|2fa|otp|timeout|network|unavailable|provider/i.test(material)
+    || ["failed", "error", "blocked", "denied"].includes(status);
+  if (!hasFailureSignal && explicitFailureType.length === 0) return null;
+
+  let failureType: OnlineFailureType = "provider_error";
+  if (explicitFailureType.includes("auth")) {
+    failureType = "auth_failure";
+  } else if (explicitFailureType.includes("rate")) {
+    failureType = "rate_limit";
+  } else if (explicitFailureType.includes("mfa") || explicitFailureType.includes("captcha") || explicitFailureType.includes("otp")) {
+    failureType = "mfa_captcha";
+  } else if (explicitFailureType.includes("network") || explicitFailureType.includes("timeout")) {
+    failureType = "network_failure";
+  } else if (/unauthor|forbidden|auth|token|credential|login|session|403|401/.test(material)) {
+    failureType = "auth_failure";
+  } else if (/rate.?limit|quota|429|too many requests/.test(material)) {
+    failureType = "rate_limit";
+  } else if (/mfa|captcha|otp|2fa/.test(material)) {
+    failureType = "mfa_captcha";
+  } else if (/timeout|network|dns|connection|503|502|gateway|service unavailable/.test(material)) {
+    failureType = "network_failure";
+  }
+
+  const portalSurface = profile.portal_surface ?? "portal_generic";
+  const missing = inferMissingPrerequisites(action, portalSurface);
+  if (failureType === "auth_failure" && missing.length === 0) {
+    missing.push(ONLINE_SURFACE_DEFAULT_CAPABILITY[portalSurface] ?? "portal_authenticated_session");
+  }
+  if (failureType === "mfa_captcha" && missing.length === 0) {
+    missing.push(`${portalSurface}_mfa_access`);
+  }
+  const normalizedMissing = uniqueStrings(missing);
+  const provider = detectOnlineProvider(action) ?? profile.portal_surface;
+  const authSessionNeeds = inferAuthSessionNeeds(portalSurface, normalizedMissing);
+  const message = redactSecrets(
+    asOptionalString(action.error)
+    ?? asOptionalString(action.blocker)
+    ?? asOptionalString(action.failure_reason)
+    ?? `${failureType} detected for ${provider ?? portalSurface}`,
+  );
+
+  return {
+    failure_type: failureType,
+    blocker_type: `online_${failureType}`,
+    provider,
+    message,
+    missing_prerequisites: normalizedMissing,
+    auth_session_needs: authSessionNeeds,
+    requires_capability_request: normalizedMissing.length > 0 || failureType === "auth_failure" || failureType === "mfa_captcha",
+    requires_local_task: profile.requires_local_task || failureType === "auth_failure" || failureType === "mfa_captcha",
+  };
+}
+
+function normalizeObservedFields(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return redactMetadata(value) as Record<string, unknown>;
+  }
+  return null;
+}
+
+function buildOnlineEvidenceRecord(
+  action: Record<string, unknown>,
+  profile: OnlineWorkflowProfile,
+  observedAt: string,
+): OnlineEvidenceRecord {
+  const status = (asOptionalString(action.status) ?? "").toLowerCase();
+  const source = redactSecrets(
+    asOptionalString(action.evidence_source)
+    ?? asOptionalString(action.source)
+    ?? asOptionalString(action.provider)
+    ?? asOptionalString(action.surface)
+    ?? asOptionalString(action.portal)
+    ?? "",
+  ) || null;
+  const tool = asOptionalString(action.tool) ?? asOptionalString(action.tool_name);
+  const taskId = asOptionalString(action.task_id) ?? asOptionalString(action.local_task_id) ?? asOptionalString(action.task_reference);
+  const evidenceId = asOptionalString(action.evidence_id) ?? asOptionalString(action.source_record_id);
+  const resultExcerpt = redactSecrets(
+    asOptionalString(action.result_excerpt)
+    ?? asOptionalString(action.evidence_excerpt)
+    ?? asOptionalString(action.observed_summary)
+    ?? "",
+  ) || null;
+  const observedFields = normalizeObservedFields(action.observed_fields ?? action.observed_field_values ?? action.fields);
+  const successClaim = asBool(action.success, false)
+    || asBool(action.completed, false)
+    || ["success", "succeeded", "completed", "done", "ok"].includes(status);
+  const hasResultEvidence = Boolean(resultExcerpt || observedFields || evidenceId || asOptionalString(action.evidence_url));
+
+  const missingFields: string[] = [];
+  if (successClaim) {
+    if (!source) missingFields.push("source");
+    if (!tool && !taskId) missingFields.push("tool_or_task_id");
+    if (!hasResultEvidence) missingFields.push("result_excerpt_or_observed_fields_or_evidence_id");
+  }
+
+  return {
+    success_claim: successClaim,
+    source,
+    tool,
+    task_id: taskId,
+    evidence_id: evidenceId,
+    timestamp: asOptionalString(action.evidence_timestamp) ?? asOptionalString(action.timestamp) ?? asOptionalString(action.observed_at) ?? observedAt,
+    provider: detectOnlineProvider(action),
+    portal_surface: profile.portal_surface,
+    result_excerpt: resultExcerpt,
+    observed_fields: observedFields,
+    evidence_complete: missingFields.length === 0,
+    missing_fields: missingFields,
+  };
 }
 
 function inferAuthSessionNeeds(portalSurface: string, prerequisites: string[]): AuthSessionNeed[] {
@@ -2759,6 +2971,7 @@ interface BusinessPmLoopArgs {
   recall_limit?: number;
   ingest_completed_local_tasks?: boolean;
   local_task_ingest_limit?: number;
+  simulated_local_task_outcomes?: unknown[];
   recall_bridged_limit?: number;
   simulate_failures?: SimulateFailuresConfig;
   pending_approvals?: number;
@@ -3167,6 +3380,60 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     }
   }
 
+  const simulatedLocalTaskOutcomes = asArray(args.simulated_local_task_outcomes).map((entry) => asRecord(entry));
+  for (let i = 0; i < simulatedLocalTaskOutcomes.length; i += 1) {
+    const simulated = simulatedLocalTaskOutcomes[i];
+    const taskId = asOptionalString(simulated.task_id)
+      ?? asOptionalString(simulated.local_task_id)
+      ?? `${correlationId}-simulated-local-task-${i + 1}`;
+    const kind = asOptionalString(simulated.kind) ?? "browser";
+    const status = (asOptionalString(simulated.status) ?? "succeeded").toLowerCase();
+    const finishedAt = asOptionalString(simulated.finished_at) ?? observedAt;
+    const simulatedResult = parseMetadata(simulated.result);
+    const outcomeCategory: TypedMemoryCategory = status === "succeeded"
+      ? (kind.includes("browser") ? "workflow" : "learning")
+      : "capability_gap";
+    const outcomeContent = status === "succeeded"
+      ? `Completed local task ${taskId} (${kind}) for objective "${objective}".`
+      : `Local task ${taskId} (${kind}) finished with status "${status}".`;
+    const storedOutcome = storeTypedMemoryRecord({
+      category: outcomeCategory,
+      content: outcomeContent,
+      metadata: {
+        source: "local_task_completion",
+        task_kind: kind,
+        task_status: status,
+        task_finished_at: finishedAt,
+        task_result: simulatedResult,
+        task_error: asOptionalString(simulated.error),
+        objective,
+        simulated_outcome: true,
+        ingested_by_correlation_id: correlationId,
+        originating_correlation_id: asOptionalString(simulated.correlation_id),
+        originating_run_id: asOptionalString(simulated.run_id),
+      },
+      trace: {
+        source: "local_task_completion",
+        correlationId: asOptionalString(simulated.correlation_id) ?? correlationId,
+        runId: asOptionalString(simulated.run_id) ?? runId,
+        taskId,
+        timestamp: finishedAt,
+        confidence: status === "succeeded" ? "high" : "medium",
+      },
+    });
+    ingestedLocalTaskOutcomes.push({
+      task_id: taskId,
+      kind,
+      status,
+      source: "simulated_validation",
+      finished_at: finishedAt,
+      correlation_id: asOptionalString(simulated.correlation_id),
+      run_id: asOptionalString(simulated.run_id),
+      memory_id: storedOutcome.id,
+      memory_category: storedOutcome.category,
+    });
+  }
+
   const recallSection = {
     prior_decisions: recalledMemories.filter((m) => m.category === "decision"),
     prior_workflows: recalledMemories.filter((m) => m.category === "workflow"),
@@ -3201,13 +3468,53 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     reason: asOptionalString(asRecord(missing).reason) ?? "missing signal",
     source: "missing_signal",
   }));
+  const priorOnlineObservationRecords = recalledMemories.filter((memory) => {
+    const metadata = asRecord(memory.metadata);
+    const source = (asOptionalString(metadata.source) ?? "").toLowerCase();
+    const content = (asOptionalString(memory.content) ?? "").toLowerCase();
+    return source.startsWith("online_workflow")
+      || source === "local_task_completion"
+      || source === "workflow_trace"
+      || source === "wf1_order_intake_assets"
+      || /online workflow|portal|gmail|matrix|mls|taxnet|cad|comet|session/.test(content);
+  });
+  const priorOnlineCapabilityGapRecords = recalledMemories.filter((memory) => {
+    if (memory.category !== "capability_gap") return false;
+    const metadata = asRecord(memory.metadata);
+    const source = (asOptionalString(metadata.source) ?? "").toLowerCase();
+    const content = (asOptionalString(memory.content) ?? "").toLowerCase();
+    return source.startsWith("online_workflow")
+      || source === "local_task_completion"
+      || source === "workflow_trace"
+      || /portal|session|auth|mfa|captcha|taxnet|mls|cad|gmail|browser/.test(content);
+  });
+  const recalledCapabilityGapInputs = priorOnlineCapabilityGapRecords.map((memory) => {
+    const metadata = asRecord(memory.metadata);
+    return {
+      capability: asOptionalString(metadata.capability),
+      reason: asOptionalString(metadata.blocker) ?? asOptionalString(memory.content) ?? "prior capability gap",
+      source: asOptionalString(metadata.source) ?? "prior_online_capability_gap",
+      memory_id: asOptionalString(memory.memory_id),
+      blocker_status: asOptionalString(metadata.blocker_status) ?? "blocked",
+    };
+  });
   const capabilityGaps = [
     ...explicitCapabilityGaps,
     ...workflowDerivedCapabilityGaps,
     ...missingSignalCapabilityGaps,
+    ...recalledCapabilityGapInputs,
   ];
 
   const recalledLearningRecords = recalledMemories.filter((m) => m.category === "learning" || m.category === "capability_gap");
+  const localTaskOutcomeEvidenceIds = ingestedLocalTaskOutcomes
+    .map((outcome) => outcome.memory_id || outcome.task_id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  const priorOnlineObservationEvidenceIds = priorOnlineObservationRecords
+    .map((memory) => asOptionalString(memory.memory_id))
+    .filter((id): id is string => Boolean(id));
+  const capabilityGapEvidenceIds = capabilityGaps
+    .map((gap) => asOptionalString(asRecord(gap).memory_id) ?? asOptionalString(asRecord(gap).capability))
+    .filter((id): id is string => Boolean(id));
   const learningInfluencedChanges: string[] = [];
   let executeSafePriority: "high" | "medium" | "low" = "high";
   let resolveBlockersPriority: "high" | "medium" | "low" = capabilityGaps.length > 0 ? "high" : "medium";
@@ -3228,6 +3535,36 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         `Prior learning ${asOptionalString(learningRecord.memory_id) ?? "unknown"} indicates successful completion, so execution priority was tempered for validation focus.`,
       );
     }
+  }
+
+  if (priorOnlineObservationRecords.length > 0) {
+    learningInfluencedChanges.push(
+      `Prior online observations (${priorOnlineObservationRecords.length}) were carried into planning evidence and used to refine online step recommendations.`,
+    );
+  }
+
+  if (priorOnlineCapabilityGapRecords.length > 0) {
+    resolveBlockersPriority = "high";
+    resolveBlockersStatus = "blocked";
+    learningInfluencedChanges.push(
+      `Prior online capability gaps (${priorOnlineCapabilityGapRecords.length}) were fed into the next plan as explicit blocked inputs.`,
+    );
+  }
+
+  const succeededOutcomes = ingestedLocalTaskOutcomes.filter((outcome) => outcome.status === "succeeded");
+  const failedOutcomes = ingestedLocalTaskOutcomes.filter((outcome) => ["failed", "cancelled", "blocked"].includes(outcome.status));
+  if (succeededOutcomes.length > 0) {
+    executeSafePriority = "medium";
+    learningInfluencedChanges.push(
+      `Completed local/browser tasks (${succeededOutcomes.length}) were ingested and used to refine next-cycle online execution priorities.`,
+    );
+  }
+  if (failedOutcomes.length > 0) {
+    resolveBlockersPriority = "high";
+    resolveBlockersStatus = "blocked";
+    learningInfluencedChanges.push(
+      `Failed or blocked local/browser tasks (${failedOutcomes.length}) were ingested as blockers for the next plan.`,
+    );
   }
 
   if (learningInfluencedChanges.length === 0 && recalledLearningRecords.length > 0) {
@@ -3264,9 +3601,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       due_at: dueAt,
       next_check_at: nextCheckAt,
       success_criteria: "Prior context properly referenced and applied to recommendations",
-      status: citedRecordIds.length > 0 ? "ready" : "blocked",
-      ready_state: citedRecordIds.length > 0 ? "ready" : "blocked",
-      evidence_ids: citedRecordIds,
+      status: (citedRecordIds.length > 0 || localTaskOutcomeEvidenceIds.length > 0 || priorOnlineObservationEvidenceIds.length > 0) ? "ready" : "blocked",
+      ready_state: (citedRecordIds.length > 0 || localTaskOutcomeEvidenceIds.length > 0 || priorOnlineObservationEvidenceIds.length > 0) ? "ready" : "blocked",
+      evidence_ids: [...citedRecordIds, ...localTaskOutcomeEvidenceIds, ...priorOnlineObservationEvidenceIds],
     },
     {
       step: "Execute safe proposed actions",
@@ -3294,9 +3631,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       success_criteria: "Blockers resolved, or capability requests/local tasks created with correlation links",
       status: resolveBlockersStatus,
       ready_state: resolveBlockersStatus === "blocked" ? "blocked" : "ready",
-      evidence_ids: capabilityGaps
-        .map((gap) => asOptionalString(asRecord(gap).capability))
-        .filter((id): id is string => Boolean(id)),
+      evidence_ids: capabilityGapEvidenceIds,
     },
     {
       step: "Capture and persist learning outcomes",
@@ -3312,6 +3647,19 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       ready_state: "ready",
       evidence_ids: [],
     },
+  ];
+
+  const onlineStepRecommendations = [
+    ...priorOnlineCapabilityGapRecords.map((memory) => ({
+      source_memory_id: asOptionalString(memory.memory_id),
+      recommended_classification: "blocked",
+      rationale: asOptionalString(memory.content) ?? "prior capability gap remains blocked",
+    })),
+    ...succeededOutcomes.map((outcome) => ({
+      source_memory_id: outcome.memory_id,
+      recommended_classification: "session-bound",
+      rationale: `Local task ${outcome.task_id} succeeded; keep as session-bound but informed by completed outcome evidence.`,
+    })),
   ];
 
   const planSection = {
@@ -3331,10 +3679,32 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       .map((intent) => asRecord(intent).intent_id)
       .filter((id): id is string => typeof id === "string" && id.length > 0),
     learning_influenced_changes: learningInfluencedChanges,
+    prior_online_observations: priorOnlineObservationRecords.map((memory) => ({
+      memory_id: asOptionalString(memory.memory_id),
+      category: asOptionalString(memory.category),
+      source: asOptionalString(asRecord(memory.metadata).source),
+      summary: asOptionalString(memory.content),
+    })),
+    prior_online_capability_gaps: priorOnlineCapabilityGapRecords.map((memory) => ({
+      memory_id: asOptionalString(memory.memory_id),
+      capability: asOptionalString(asRecord(memory.metadata).capability),
+      source: asOptionalString(asRecord(memory.metadata).source),
+      blocker_status: asOptionalString(asRecord(memory.metadata).blocker_status) ?? "blocked",
+      summary: asOptionalString(memory.content),
+    })),
+    local_task_feedback: {
+      outcome_count: ingestedLocalTaskOutcomes.length,
+      outcomes: ingestedLocalTaskOutcomes,
+      succeeded_count: succeededOutcomes.length,
+      failed_or_blocked_count: failedOutcomes.length,
+      evidence_ids: localTaskOutcomeEvidenceIds,
+    },
+    capability_gap_inputs: capabilityGaps,
+    online_step_recommendations: onlineStepRecommendations,
     unknown_signals: unknownSignals,
     actions: planActions,
     summary: recalledMemories.length > 0
-      ? `Plan synthesized with ${recalledMemories.length} recalled memory records, ${recalledBridgeReferences.length} bridged references, and ${learningInfluencedChanges.length} learning-driven adjustment(s). Seeded WF1/order-intake assets informed online workflow awareness.`
+      ? `Plan synthesized with ${recalledMemories.length} recalled memory records, ${recalledBridgeReferences.length} bridged references, ${ingestedLocalTaskOutcomes.length} local-task outcome(s), and ${learningInfluencedChanges.length} learning-driven adjustment(s). Seeded WF1/order-intake assets informed online workflow awareness.`
       : "Plan synthesized from current observations/objective and seeded WF1/order-intake workflow assets.",
   };
 
@@ -3351,6 +3721,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const queuedLocalTasks: Array<Record<string, unknown>> = [];
   const filedCapabilityRequests: Array<Record<string, unknown>> = [...unknownSignalCapabilityRequests];
   const onlineStepClassifications: Array<Record<string, unknown>> = [];
+  const onlineSuccessEvidence: Array<Record<string, unknown>> = [];
+  const onlineFailureBlockers: Array<Record<string, unknown>> = [];
   const onlineObservationRecords: Array<Record<string, unknown>> = [];
   const cycleBlockerRequestMap = new Map<string, string | null>();
 
@@ -3359,11 +3731,39 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     const riskClassification = classifyActionRisk(action);
     const onlineProfile = classifyOnlineWorkflowStep(action, riskClassification);
     const actionReference = asOptionalString(action.action ?? action.type ?? action.kind) ?? `proposed_action_${i}`;
+    let onlineFailure = classifyOnlineFailureType(action, onlineProfile);
+    const onlineEvidence = buildOnlineEvidenceRecord(action, onlineProfile, observedAt);
+    if (onlineEvidence.success_claim && !onlineEvidence.evidence_complete) {
+      onlineFailure = {
+        failure_type: "missing_evidence",
+        blocker_type: "online_missing_evidence",
+        provider: onlineEvidence.provider,
+        message: `Online success claim for "${actionReference}" is missing required evidence fields: ${onlineEvidence.missing_fields.join(", ")}`,
+        missing_prerequisites: [],
+        auth_session_needs: [],
+        requires_capability_request: false,
+        requires_local_task: false,
+      };
+    }
+    const effectiveMissingPrerequisites = uniqueStrings([
+      ...onlineProfile.missing_prerequisites,
+      ...(onlineFailure?.missing_prerequisites ?? []),
+    ]);
+    const effectiveAuthSessionNeeds = onlineFailure?.auth_session_needs.length
+      ? onlineFailure.auth_session_needs
+      : inferAuthSessionNeeds(onlineProfile.portal_surface ?? "portal_generic", effectiveMissingPrerequisites);
+    const effectiveExecutionClassification: OnlineExecutionClassification = onlineFailure
+      ? "blocked"
+      : onlineProfile.execution_classification;
     let actionStatus = riskClassification.blocked ? "awaiting_approval" : (asOptionalString(action.status) ?? "ready");
-    if (onlineProfile.blocked_missing_capability) {
-      actionStatus = "blocked_missing_capability";
-    } else if (onlineProfile.execution_classification === "session-bound" && !riskClassification.blocked) {
-      actionStatus = "queued_local_task";
+    if (!riskClassification.blocked) {
+      if (onlineFailure) {
+        actionStatus = `blocked_${onlineFailure.failure_type}`;
+      } else if (onlineProfile.blocked_missing_capability) {
+        actionStatus = "blocked_missing_capability";
+      } else if (effectiveExecutionClassification === "session-bound") {
+        actionStatus = "queued_local_task";
+      }
     }
 
     const proposalLink: Record<string, unknown> = {
@@ -3382,39 +3782,67 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       approval_required: riskClassification.approval_required,
       expected_outcome: asOptionalString(action.expected_outcome) ?? asOptionalString(action.description) ?? `Outcome of action: ${actionReference}`,
       status: actionStatus,
-      execution_classification: onlineProfile.execution_classification,
+      execution_classification: effectiveExecutionClassification,
       portal_surface: onlineProfile.portal_surface,
-      missing_prerequisites: onlineProfile.missing_prerequisites,
-      auth_session_needs: onlineProfile.auth_session_needs,
+      missing_prerequisites: effectiveMissingPrerequisites,
+      auth_session_needs: effectiveAuthSessionNeeds,
       classification_reason: onlineProfile.classification_reason,
+      blocker_type: onlineFailure?.blocker_type ?? null,
+      failure_type: onlineFailure?.failure_type ?? null,
+      failure_message: onlineFailure?.message ?? null,
+      evidence: onlineEvidence,
       correlation_id: correlationId,
     };
 
     classifiedActions.push(classifiedAction);
 
     if (onlineProfile.is_online_workflow) {
+      if (onlineEvidence.success_claim) {
+        onlineSuccessEvidence.push({
+          action_index: i,
+          action_reference: actionReference,
+          ...onlineEvidence,
+          correlation_id: correlationId,
+          run_id: runId,
+        });
+      }
       onlineStepClassifications.push({
         action_index: i,
         action_reference: actionReference,
-        execution_classification: onlineProfile.execution_classification,
+        execution_classification: effectiveExecutionClassification,
         portal_surface: onlineProfile.portal_surface,
-        classification_reason: onlineProfile.classification_reason,
-        missing_prerequisites: onlineProfile.missing_prerequisites,
+        classification_reason: onlineFailure?.message ?? onlineProfile.classification_reason,
+        missing_prerequisites: effectiveMissingPrerequisites,
+        blocker_type: onlineFailure?.blocker_type ?? null,
+        failure_type: onlineFailure?.failure_type ?? null,
+        provider: onlineFailure?.provider ?? onlineEvidence.provider,
+        success_claim: onlineEvidence.success_claim,
+        evidence_complete: onlineEvidence.evidence_complete,
         correlation_id: correlationId,
       });
     }
 
-    const isBlocked = riskClassification.blocked || onlineProfile.blocked_missing_capability;
+    const isBlocked = riskClassification.blocked || onlineProfile.blocked_missing_capability || Boolean(onlineFailure);
     if (isBlocked) {
-      blockedActions.push({
+      const blockedRecord = {
         action_reference: actionReference,
         risk_level: riskClassification.risk_level,
+        blocker_type: onlineFailure?.blocker_type ?? (onlineProfile.blocked_missing_capability ? "online_missing_capability" : "approval_required"),
+        failure_type: onlineFailure?.failure_type ?? null,
+        provider: onlineFailure?.provider ?? onlineEvidence.provider,
+        portal_surface: onlineProfile.portal_surface,
         blocked_reason: onlineProfile.blocked_missing_capability
-          ? `Missing online workflow prerequisites: ${onlineProfile.missing_prerequisites.join(", ")}`
-          : (riskClassification.blocked_reason ?? "Action requires approval"),
+          ? `Missing online workflow prerequisites: ${effectiveMissingPrerequisites.join(", ")}`
+          : (onlineFailure?.message ?? riskClassification.blocked_reason ?? "Action requires approval"),
+        missing_prerequisites: effectiveMissingPrerequisites,
+        auth_session_needs: effectiveAuthSessionNeeds,
         original_action: action,
         correlation_id: correlationId,
-      });
+      };
+      blockedActions.push(blockedRecord);
+      if (onlineProfile.is_online_workflow) {
+        onlineFailureBlockers.push(blockedRecord);
+      }
     }
 
     if (riskClassification.blocked) {
@@ -3476,14 +3904,20 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       }
     }
 
-    if (onlineProfile.is_online_workflow && onlineProfile.missing_prerequisites.length > 0 && onlineProfile.portal_surface) {
-      const blockerKey = normalizeHandle(`${onlineProfile.portal_surface}:${onlineProfile.missing_prerequisites.join("|")}`);
+    const shouldFileOnlineCapabilityRequest = onlineProfile.is_online_workflow
+      && Boolean(onlineProfile.portal_surface)
+      && (effectiveMissingPrerequisites.length > 0 || Boolean(onlineFailure?.requires_capability_request));
+    if (shouldFileOnlineCapabilityRequest && onlineProfile.portal_surface) {
+      const blockerDescriptor = effectiveMissingPrerequisites.length > 0
+        ? effectiveMissingPrerequisites.join("|")
+        : (onlineFailure?.failure_type ?? actionReference);
+      const blockerKey = normalizeHandle(`${onlineProfile.portal_surface}:${blockerDescriptor}`);
       const existingFromCycle = cycleBlockerRequestMap.get(blockerKey);
       const existingFromMemory = capabilityGapByBlockerKey(blockerKey);
       const knownRequestId = existingFromCycle ?? existingFromMemory?.request_id ?? null;
       let capabilityRequestId: string | null = knownRequestId;
       let capabilityRequestStatus = knownRequestId ? "reused_existing" : "pending";
-      const primaryCapability = onlineProfile.missing_prerequisites[0]
+      const primaryCapability = effectiveMissingPrerequisites[0]
         ?? ONLINE_SURFACE_DEFAULT_CAPABILITY[onlineProfile.portal_surface]
         ?? "portal_authenticated_session";
 
@@ -3492,7 +3926,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "online_workflow")) {
             const capabilityResult = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
               capability: primaryCapability,
-              justification: `[${correlationId}] ${onlineProfile.portal_surface} workflow step "${actionReference}" is blocked by missing prerequisite(s): ${onlineProfile.missing_prerequisites.join(", ")}.`,
+              justification: `[${correlationId}] ${onlineProfile.portal_surface} workflow step "${actionReference}" is blocked by ${
+                onlineFailure ? `${onlineFailure.failure_type}: ${onlineFailure.message}` : `missing prerequisite(s): ${effectiveMissingPrerequisites.join(", ")}`
+              }.`,
               requested_by: FLEET_AGENT_NAME,
             }));
             capabilityRequestId = asIdentifier(capabilityResult.id) ?? asIdentifier(capabilityResult.request_id);
@@ -3515,24 +3951,36 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         source: capabilityRequestStatus === "reused_existing" ? "online_portal_prerequisite_reused" : "online_portal_prerequisite",
         portal_surface: onlineProfile.portal_surface,
         blocker_key: blockerKey,
-        prerequisites: onlineProfile.missing_prerequisites,
-        auth_session_needs: onlineProfile.auth_session_needs,
+        blocker_type: onlineFailure?.blocker_type ?? "online_missing_capability",
+        failure_type: onlineFailure?.failure_type ?? null,
+        provider: onlineFailure?.provider ?? onlineEvidence.provider,
+        prerequisites: effectiveMissingPrerequisites,
+        auth_session_needs: effectiveAuthSessionNeeds,
         action_reference: actionReference,
       });
 
       const gapMemory = storeTypedMemoryRecord({
         category: "capability_gap",
-        content: `[${correlationId}] Online workflow blocker for ${onlineProfile.portal_surface}: ${onlineProfile.missing_prerequisites.join(", ")}.`,
+        content: `[${correlationId}] Online workflow blocker for ${onlineProfile.portal_surface}: ${
+          onlineFailure
+            ? `${onlineFailure.failure_type} (${onlineFailure.message})`
+            : effectiveMissingPrerequisites.join(", ")
+        }.`,
         metadata: {
           source: "online_workflow_blocker",
           blocker_key: blockerKey,
+          blocker_type: onlineFailure?.blocker_type ?? "online_missing_capability",
+          failure_type: onlineFailure?.failure_type ?? null,
+          provider: onlineFailure?.provider ?? onlineEvidence.provider,
+          failure_message: onlineFailure?.message ?? null,
           capability: primaryCapability,
           capability_request_id: capabilityRequestId,
           portal_surface: onlineProfile.portal_surface,
-          prerequisite_types: onlineProfile.missing_prerequisites,
-          auth_session_needs: onlineProfile.auth_session_needs,
+          prerequisite_types: effectiveMissingPrerequisites,
+          auth_session_needs: effectiveAuthSessionNeeds,
+          evidence: onlineEvidence,
           action_reference: actionReference,
-          blocker_status: onlineProfile.blocked_missing_capability ? "blocked" : "session-bound",
+          blocker_status: effectiveExecutionClassification === "blocked" ? "blocked" : "session-bound",
         },
         trace: {
           source: "online_workflow_blocker",
@@ -3553,9 +4001,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       }
     }
 
-    if (onlineProfile.requires_local_task && FLEET_CONTROL_PLANE.isConfigured() && !proposalLink.local_task_id) {
+    const shouldQueueOnlineLocalTask = onlineProfile.requires_local_task || Boolean(onlineFailure?.requires_local_task);
+    if (shouldQueueOnlineLocalTask && FLEET_CONTROL_PLANE.isConfigured() && !proposalLink.local_task_id) {
       const portal = onlineProfile.portal_surface ?? "portal_generic";
-      const blockerKey = normalizeHandle(`${portal}:${onlineProfile.missing_prerequisites.join("|") || actionReference}`);
+      const blockerKey = normalizeHandle(`${portal}:${effectiveMissingPrerequisites.join("|") || onlineFailure?.failure_type || actionReference}`);
       try {
         if (!shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "propose")) {
           const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
@@ -3564,9 +4013,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
               action_reference: actionReference,
               action_index: i,
               portal_surface: portal,
-              execution_classification: onlineProfile.execution_classification,
-              auth_session_needs: onlineProfile.auth_session_needs,
-              missing_prerequisites: onlineProfile.missing_prerequisites,
+              execution_classification: effectiveExecutionClassification,
+              auth_session_needs: effectiveAuthSessionNeeds,
+              missing_prerequisites: effectiveMissingPrerequisites,
+              online_failure_type: onlineFailure?.failure_type ?? null,
+              online_blocker_type: onlineFailure?.blocker_type ?? null,
+              online_failure_message: onlineFailure?.message ?? null,
+              online_evidence: onlineEvidence,
               correlation_id: correlationId,
               run_id: runId,
               objective,
@@ -3584,10 +4037,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
             kind: "browser",
             source: FLEET_AGENT_NAME,
             status: queued.status ?? queued.state ?? null,
-            reason: onlineProfile.execution_classification === "blocked" ? "blocked_online_step" : "session_bound_online_step",
+            reason: effectiveExecutionClassification === "blocked" ? "blocked_online_step" : "session_bound_online_step",
             portal_surface: portal,
             action_reference: actionReference,
-            auth_session_needs: onlineProfile.auth_session_needs,
+            auth_session_needs: effectiveAuthSessionNeeds,
           });
           proposalLink.local_task_id = localTaskId;
           if (proposalLink.link_status === "classified") {
@@ -3601,20 +4054,25 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     }
 
     if (onlineProfile.is_online_workflow) {
-      const onlineRecordCategory: TypedMemoryCategory = onlineProfile.execution_classification === "blocked"
+      const onlineRecordCategory: TypedMemoryCategory = effectiveExecutionClassification === "blocked"
         ? "capability_gap"
-        : (onlineProfile.execution_classification === "session-bound" ? "workflow" : "learning");
+        : (effectiveExecutionClassification === "session-bound" ? "workflow" : "learning");
       const storedOnlineRecord = storeTypedMemoryRecord({
         category: onlineRecordCategory,
-        content: `[${correlationId}] Online workflow observation for ${actionReference}: ${onlineProfile.execution_classification}.`,
+        content: `[${correlationId}] Online workflow observation for ${actionReference}: ${effectiveExecutionClassification}.`,
         metadata: {
           source: "online_workflow_observation",
           action_reference: actionReference,
           portal_surface: onlineProfile.portal_surface,
-          execution_classification: onlineProfile.execution_classification,
-          classification_reason: onlineProfile.classification_reason,
-          missing_prerequisites: onlineProfile.missing_prerequisites,
-          auth_session_needs: onlineProfile.auth_session_needs,
+          execution_classification: effectiveExecutionClassification,
+          classification_reason: onlineFailure?.message ?? onlineProfile.classification_reason,
+          missing_prerequisites: effectiveMissingPrerequisites,
+          auth_session_needs: effectiveAuthSessionNeeds,
+          blocker_type: onlineFailure?.blocker_type ?? null,
+          failure_type: onlineFailure?.failure_type ?? null,
+          provider: onlineFailure?.provider ?? onlineEvidence.provider,
+          failure_message: onlineFailure?.message ?? null,
+          evidence: onlineEvidence,
           objective,
         },
         trace: {
@@ -3622,7 +4080,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           correlationId,
           runId,
           timestamp: observedAt,
-          confidence: onlineProfile.execution_classification === "headless-safe" ? "medium" : "high",
+          confidence: effectiveExecutionClassification === "headless-safe" ? "medium" : "high",
         },
       });
       onlineObservationRecords.push({
@@ -3630,7 +4088,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         category: storedOnlineRecord.category,
         action_reference: actionReference,
         portal_surface: onlineProfile.portal_surface,
-        execution_classification: onlineProfile.execution_classification,
+        execution_classification: effectiveExecutionClassification,
+        blocker_type: onlineFailure?.blocker_type ?? null,
+        failure_type: onlineFailure?.failure_type ?? null,
+        evidence_complete: onlineEvidence.evidence_complete,
       });
     }
     proposalRecordLinks.push(proposalLink);
@@ -3797,6 +4258,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     actions: classifiedActions,
     blocked_actions: blockedActions,
     online_step_classification: onlineStepClassifications,
+    online_success_evidence: onlineSuccessEvidence,
+    online_failure_blockers: onlineFailureBlockers,
     online_observation_records: onlineObservationRecords,
     approval_requests: approvalRequestRecords,
     proposal_records: proposalRecordLinks,
@@ -3946,6 +4409,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     learning_records: learningMemoryRecords,
     decision_records: decisionMemoryRecords,
     motto_skills_bridges: mottoSkillsBridges,
+    local_task_outcomes_ingested: ingestedLocalTaskOutcomes,
     validation_evidence: validationEvidenceEntries(args.validation_evidence),
     correlation_id: correlationId,
     generated_at: observedAt,
