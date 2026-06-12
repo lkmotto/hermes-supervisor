@@ -78,6 +78,14 @@ export const RISK_METADATA: Record<string, RiskMetadata> = {
     level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
     scope: "read", summary: "Read-only retrieval of fleet run details and artifact contents.",
   },
+  business_pm_loop: {
+    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "memory", summary: "Canonical business PM loop: perceive/recall/plan/propose/learn. Persists learning and decision records, risk-classifies proposed actions, blocks unsafe actions, and generates business status reports. Does not directly mutate VPS or infrastructure.",
+  },
+  business_status_report: {
+    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "read", summary: "High-level business operations status report summarizing current focus, signals, projects, pending approvals, blocked capabilities, risks, and next steps.",
+  },
   vps_restart_project: {
     level: "hermes-scoped-mutation", mutating: true, confirmation_required: true, approval_required: true,
     scope: "hermes", summary: "Restarts a Docker project. Hermes-scoped when project=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",

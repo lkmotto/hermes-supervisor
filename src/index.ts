@@ -1282,6 +1282,93 @@ const tools: Tool[] = [
       required: ["run_id"],
     },
   },
+  {
+    name: "business_pm_loop",
+    description: "Canonical Hermes business PM loop invocation returning structured perceive/recall/plan/propose/learn output. Uses seeded memory/workflow/decision context, persists outcomes as learning and decision records, risk-classifies proposed actions, blocks unsafe actions without approval, and generates a business status report.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        objective: { type: "string", description: "Business operations objective or focus area for this loop iteration." },
+        correlation_id: { type: "string", description: "Validation correlation ID shared across all generated records." },
+        observations: { type: "array", items: { type: "object" }, description: "Observed business signals and process observations for the perceive phase." },
+        proposed_actions: { type: "array", items: { type: "object" }, description: "Proposed business actions for risk classification and approval gating." },
+        capability_gaps: { type: "array", items: { type: "object" }, description: "Known capability blockers and missing prerequisites." },
+        learnings: { type: "array", items: { type: "object" }, description: "Learnings captured from the cycle to persist as learning and decision records." },
+        coordination_intents: {
+          type: "array",
+          items: { type: "object" },
+          description: "Cross-agent intents to emit via signal_intent.",
+        },
+        local_tasks: {
+          type: "array",
+          items: { type: "object" },
+          description: "Local/browser/authenticated work requests queued via queue_local_task.",
+        },
+        capability_requests: {
+          type: "array",
+          items: { type: "object" },
+          description: "Missing credential/tool/session requests sent via request_capability.",
+        },
+        consume_intents_limit: {
+          type: "number",
+          description: "Maximum open intents to consume (default 10).",
+          default: 10,
+        },
+        recall_categories: {
+          type: "array",
+          items: { type: "string" },
+          description: "Memory categories to recall for the recall phase. Default: decision, workflow, fact, project.",
+        },
+        recall_query: {
+          type: "string",
+          description: "Optional search query for memory recall. Defaults to the objective.",
+        },
+        recall_limit: {
+          type: "number",
+          description: "Maximum memory records to recall per category (default 10).",
+          default: 10,
+        },
+        ingest_completed_local_tasks: {
+          type: "boolean",
+          description: "When true (default), ingest completed local task outcomes into typed memory learnings.",
+          default: true,
+        },
+        local_task_ingest_limit: {
+          type: "number",
+          description: "Maximum completed local tasks to scan (default 50).",
+          default: 50,
+        },
+        recall_bridged_limit: {
+          type: "number",
+          description: "How many recent motto-skills bridge records to include (default 10).",
+          default: 10,
+        },
+        simulate_failures: {
+          type: "object",
+          description: "Validation-only failure simulation.",
+          properties: {
+            fleet_operations: { type: "array", items: { type: "string" } },
+            fleet_sections: { type: "array", items: { type: "string" } },
+            knowledge_store: { type: "boolean" },
+          },
+        },
+        pending_approvals: { type: "number", description: "Count of pending approvals associated with the cycle." },
+        blocked_capabilities: { type: "array", items: { type: "string" }, description: "Currently blocked capabilities for heartbeat metadata." },
+      },
+      required: ["objective"],
+    },
+  },
+  {
+    name: "business_status_report",
+    description: "Generate a high-level business operations status report summarizing current process focus, observed signals, active projects/workflows, pending approvals, blocked capabilities, risks, and recommended next steps.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        focus: { type: "string", description: "Current process focus area (defaults to last cycle objective)." },
+        correlation_id: { type: "string", description: "Optional validation correlation ID." },
+      },
+    },
+  },
 ];
 
 // ─── Risk metadata decoration (visible in tools/list) ──────────────
@@ -2115,6 +2202,1098 @@ async function handleFleetGetRunDetails(args: { run_id: string }) {
   }
 }
 
+// ─── Risk classification for proposed actions ──────────────────────
+
+type ActionRiskLevel = "read-only" | "low-impact-write" | "hermes-scoped-mutation" | "dangerous-global-mutation";
+
+function classifyActionRisk(action: Record<string, unknown>): {
+  risk_level: ActionRiskLevel;
+  approval_required: boolean;
+  blocked: boolean;
+  blocked_reason?: string;
+} {
+  const toolName = asOptionalString(action.tool ?? action.tool_name);
+  const actionType = asOptionalString(action.type ?? action.action ?? action.kind) ?? "";
+  const actionTypeLower = actionType.toLowerCase();
+
+  // If the action references a known tool, use the existing risk policy
+  if (toolName && RISK_METADATA[toolName]) {
+    const meta = RISK_METADATA[toolName];
+    const blocked = meta.level === "dangerous-global-mutation" || (meta.mutating && meta.level === "hermes-scoped-mutation");
+    return {
+      risk_level: meta.level as ActionRiskLevel,
+      approval_required: meta.approval_required || meta.mutating,
+      blocked,
+      blocked_reason: blocked
+        ? `Action references tool "${toolName}" classified as ${meta.level}; requires explicit approval.`
+        : undefined,
+    };
+  }
+
+  // Classify by action type keywords
+  if (/restart\s+(full\s+)?vps|vps\s+restart/i.test(actionType)) {
+    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "VPS restart is a dangerous/global action requiring explicit approval." };
+  }
+  if (/snapshot/i.test(actionType)) {
+    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "VPS snapshot is a dangerous/global action requiring explicit approval." };
+  }
+  if (/stop\s+(project|service)/i.test(actionType) && !/hermes/i.test(actionType)) {
+    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Stopping a non-Hermes project is a dangerous/global action requiring explicit approval." };
+  }
+  if (/deploy|restart\s+project|start\s+project/i.test(actionType) && !/hermes/i.test(actionType)) {
+    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Non-Hermes project deployment/control is a dangerous/global action requiring explicit approval." };
+  }
+  if (/restart\s+hermes|redeploy\s+hermes|deploy\s+hermes|start\s+hermes/i.test(actionType)) {
+    return { risk_level: "hermes-scoped-mutation", approval_required: true, blocked: true, blocked_reason: "Hermes-scoped mutation requires validation evidence and approval." };
+  }
+  if (/submit|send\s+email|purchase|order|credential\s+change|portal\s+mutation/i.test(actionType)) {
+    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Business-impacting online mutation requires explicit approval." };
+  }
+  if (/research|read|query|list|info|metrics|logs|recall|status|report/i.test(actionType)) {
+    return { risk_level: "read-only", approval_required: false, blocked: false };
+  }
+  if (/store\s+memory|plan|write\s+memory|record|emit|log\s+decision/i.test(actionType)) {
+    return { risk_level: "low-impact-write", approval_required: false, blocked: false };
+  }
+
+  // Default: if the action mentions mutating keywords, classify as hermes-scoped
+  if (/restart|deploy|stop|start|create|delete|update|modify|change/i.test(actionType)) {
+    return { risk_level: "hermes-scoped-mutation", approval_required: true, blocked: true, blocked_reason: "Potential mutating action requires approval before execution." };
+  }
+
+  // Default to low-impact-write for unspecified actions
+  return { risk_level: "low-impact-write", approval_required: false, blocked: false };
+}
+
+// ─── Business PM Loop handler ─────────────────────────────────────
+
+interface BusinessPmLoopArgs {
+  objective: string;
+  correlation_id?: string;
+  observations?: unknown[];
+  proposed_actions?: unknown[];
+  capability_gaps?: unknown[];
+  learnings?: unknown[];
+  coordination_intents?: unknown[];
+  local_tasks?: unknown[];
+  capability_requests?: unknown[];
+  consume_intents_limit?: number;
+  recall_categories?: unknown[];
+  recall_query?: string;
+  recall_limit?: number;
+  ingest_completed_local_tasks?: boolean;
+  local_task_ingest_limit?: number;
+  recall_bridged_limit?: number;
+  simulate_failures?: SimulateFailuresConfig;
+  pending_approvals?: number;
+  blocked_capabilities?: unknown[];
+}
+
+async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
+  const objective = redactSecrets((args.objective ?? "").trim());
+  if (!objective) {
+    return { content: [{ type: "text", text: "Error: objective is required" }], isError: true };
+  }
+
+  const correlationId = normalizeCorrelationId(args.correlation_id);
+  const observedAt = nowIso();
+  const simulateFailuresRaw = asRecord(args.simulate_failures);
+  const simulateFailures = Object.keys(simulateFailuresRaw).length > 0
+    ? (simulateFailuresRaw as SimulateFailuresConfig)
+    : undefined;
+  fleetLifecycleState.pendingApprovals = asNonNegativeInt(args.pending_approvals, 0);
+  fleetLifecycleState.blockedCapabilities = asStringArray(args.blocked_capabilities);
+
+  const cycleErrors: string[] = [];
+
+  // ── Fleet startup ──
+  await ensureFleetStartupLifecycle();
+  if (!FLEET_CONTROL_PLANE.isConfigured()) {
+    const message = "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
+    queueFleetRetry("cycle_preflight", correlationId, null, message);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: message }, null, 2) }],
+      isError: true,
+    };
+  }
+
+  try {
+    await ensureFleetRegistered();
+  } catch (error) {
+    queueFleetRetry("register_agent", correlationId, null, error);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: "Failed to register Hermes with fleet." }, null, 2) }],
+      isError: true,
+    };
+  }
+
+  try {
+    await sendFleetHeartbeat("pm_loop_start", objective);
+  } catch (error) {
+    queueFleetRetry("heartbeat_pm_loop_start", correlationId, null, error);
+    cycleErrors.push("heartbeat_pm_loop_start failed");
+  }
+
+  // ── Start fleet run ──
+  let runId: string | null = null;
+  try {
+    if (shouldSimulateOperationFailure(simulateFailures, "record_run_start")) {
+      throw new Error("Simulated fleet run-start failure");
+    }
+    const runStart = await FLEET_CONTROL_PLANE.recordRunStart({
+      agent_name: FLEET_AGENT_NAME,
+      kind: "business-pm-loop",
+      intent: `${objective} [${correlationId}]`,
+    });
+    runId = String(asRecord(runStart).run_id ?? "");
+    if (!runId) throw new Error("record_run_start did not return run_id");
+  } catch (error) {
+    queueFleetRetry("record_run_start", correlationId, null, error);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: "Failed to start fleet run." }, null, 2) }],
+      isError: true,
+    };
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // PHASE 1: PERCEIVE — Gather observations and live signals
+  // ════════════════════════════════════════════════════════════════
+
+  const observations = asArray(args.observations).map((obs) => {
+    const r = asRecord(obs);
+    return {
+      ...r,
+      source: asOptionalString(r.source) ?? "user_input",
+      timestamp: asOptionalString(r.timestamp) ?? observedAt,
+      confidence: asOptionalString(r.confidence) ?? "medium",
+      correlation_id: correlationId,
+    };
+  });
+
+  // Consume inbound intents as signals
+  const consumedInboundIntents: Array<Record<string, unknown>> = [];
+  const consumeIntentsLimit = Math.max(1, asNonNegativeInt(args.consume_intents_limit, 10));
+  try {
+    if (shouldSimulateOperationFailure(simulateFailures, "consume_open_intents", "perceive")) {
+      throw new Error("Simulated intent-consume failure");
+    }
+    const consumed = await FLEET_CONTROL_PLANE.consumeOpenIntents(FLEET_AGENT_NAME, consumeIntentsLimit);
+    consumedInboundIntents.push(...asArray(consumed).map((intent) => asRecord(intent)));
+  } catch (error) {
+    cycleErrors.push("consume_open_intents failed");
+    queueFleetRetry("consume_open_intents", correlationId, runId, error);
+  }
+
+  // Add consumed intents as perceive signals
+  const perceivedSignals = consumedInboundIntents.map((intent) => ({
+    signal_type: "inbound_intent",
+    intent_id: asRecord(intent).intent_id ?? null,
+    kind: asRecord(intent).kind ?? null,
+    source: asRecord(intent).source_agent ?? "fleet",
+    timestamp: observedAt,
+    confidence: "high",
+    correlation_id: correlationId,
+  }));
+
+  const perceiveSection = {
+    observations,
+    signals: perceivedSignals,
+    consumed_intents_count: consumedInboundIntents.length,
+    correlation_id: correlationId,
+    generated_at: observedAt,
+  };
+
+  // ════════════════════════════════════════════════════════════════
+  // PHASE 2: RECALL — Retrieve prior decisions, workflows, memories
+  // ════════════════════════════════════════════════════════════════
+
+  const defaultRecallCategories = ["decision", "workflow", "fact", "project"];
+  const recallCategories = asStringArray(args.recall_categories).length > 0
+    ? asStringArray(args.recall_categories)
+    : defaultRecallCategories;
+  const recallQuery = asOptionalString(args.recall_query) ?? objective;
+  const recallLimit = asNonNegativeInt(args.recall_limit, 10);
+
+  const recalledMemories: Array<Record<string, unknown>> = [];
+  for (const category of recallCategories) {
+    try {
+      const stmt = db.prepare(
+        "SELECT id, category, content, metadata, created_at FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?",
+      );
+      stmt.bind([category, `%${recallQuery}%`, recallLimit]);
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as Record<string, unknown>;
+        recalledMemories.push({
+          memory_id: row.id,
+          category: row.category,
+          content: row.content,
+          metadata: parseMetadata(row.metadata),
+          created_at: row.created_at,
+          correlation_id: correlationId,
+        });
+      }
+      stmt.free();
+    } catch {
+      // Recall is best-effort
+    }
+  }
+
+  // Also recall recent records without query filter if no category matches
+  if (recalledMemories.length === 0) {
+    try {
+      for (const category of recallCategories) {
+        const stmt = db.prepare(
+          "SELECT id, category, content, metadata, created_at FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?",
+        );
+        stmt.bind([category, Math.max(1, Math.trunc(recallLimit / 2))]);
+        while (stmt.step()) {
+          const row = stmt.getAsObject() as Record<string, unknown>;
+          recalledMemories.push({
+            memory_id: row.id,
+            category: row.category,
+            content: row.content,
+            metadata: parseMetadata(row.metadata),
+            created_at: row.created_at,
+            correlation_id: correlationId,
+          });
+        }
+        stmt.free();
+      }
+    } catch {
+      // Recall is best-effort
+    }
+  }
+
+  // Recall bridged knowledge
+  const recalledBridgeReferences = recentBridgeReferences(
+    asNonNegativeInt(args.recall_bridged_limit, 10),
+  );
+
+  // Ingest completed local task outcomes
+  const ingestedLocalTaskOutcomes: LocalTaskOutcome[] = [];
+  if (asBool(args.ingest_completed_local_tasks, true)) {
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "list_local_tasks", "local_task_outcomes")) {
+        throw new Error("Simulated local task outcome ingestion failure");
+      }
+      const outcomes = await ingestCompletedLocalTasks({
+        cycleCorrelationId: correlationId,
+        runId,
+        objective,
+        observedAt,
+        limit: asNonNegativeInt(args.local_task_ingest_limit, 50),
+      });
+      ingestedLocalTaskOutcomes.push(...outcomes);
+    } catch (error) {
+      cycleErrors.push("ingest_completed_local_tasks failed");
+      queueFleetRetry("ingest_completed_local_tasks", correlationId, runId, error);
+    }
+  }
+
+  const recallSection = {
+    prior_decisions: recalledMemories.filter((m) => m.category === "decision"),
+    prior_workflows: recalledMemories.filter((m) => m.category === "workflow"),
+    prior_facts: recalledMemories.filter((m) => m.category === "fact"),
+    prior_projects: recalledMemories.filter((m) => m.category === "project"),
+    other_memories: recalledMemories.filter(
+      (m) => !["decision", "workflow", "fact", "project"].includes(m.category as string),
+    ),
+    bridged_knowledge: recalledBridgeReferences,
+    local_task_outcomes: ingestedLocalTaskOutcomes,
+    total_recalled: recalledMemories.length + recalledBridgeReferences.length + ingestedLocalTaskOutcomes.length,
+    correlation_id: correlationId,
+    generated_at: observedAt,
+  };
+
+  // ════════════════════════════════════════════════════════════════
+  // PHASE 3: PLAN — Build structured plan citing recalled records
+  // ════════════════════════════════════════════════════════════════
+
+  // Cite recalled records in the plan
+  const citedRecordIds = recalledMemories.map((m) => m.memory_id);
+  const citedBridgeIds = recalledBridgeReferences.map((b) => ({
+    store_type: b.bridge_store_type,
+    record_id: b.bridge_record_id,
+    store_path: b.bridge_store_path,
+  }));
+
+  const planActions = [
+    {
+      step: "Review and triage observations",
+      owner: "hermes",
+      priority: "high",
+      dependencies: [],
+      timing: "immediate",
+      success_criteria: "All observations categorized and prioritized",
+      status: "ready",
+      evidence_ids: [],
+    },
+    {
+      step: "Integrate recalled decisions and workflows into current plan",
+      owner: "hermes",
+      priority: "high",
+      dependencies: [],
+      timing: "immediate",
+      success_criteria: "Prior context properly referenced and applied",
+      status: citedRecordIds.length > 0 ? "ready" : "none",
+      evidence_ids: citedRecordIds,
+    },
+    {
+      step: "Execute safe proposed actions",
+      owner: "hermes",
+      priority: "high",
+      dependencies: ["Review and triage observations"],
+      timing: "next_cycle",
+      success_criteria: "All safe actions completed or queued",
+      status: "ready",
+      evidence_ids: [],
+    },
+    {
+      step: "Resolve blocked capabilities and pending approvals",
+      owner: "hermes",
+      priority: "medium",
+      dependencies: ["Execute safe proposed actions"],
+      timing: "next_cycle",
+      success_criteria: "Blockers resolved or escalated",
+      status: "blocked",
+      evidence_ids: [],
+    },
+    {
+      step: "Capture and persist learning outcomes",
+      owner: "hermes",
+      priority: "medium",
+      dependencies: ["Execute safe proposed actions"],
+      timing: "end_of_cycle",
+      success_criteria: "All learnings and decisions persisted with metadata",
+      status: "ready",
+      evidence_ids: [],
+    },
+  ];
+
+  const planSection = {
+    objective,
+    correlation_id: correlationId,
+    generated_at: observedAt,
+    cited_records: citedRecordIds,
+    cited_bridged_knowledge: citedBridgeIds,
+    inbound_intent_ids: consumedInboundIntents
+      .map((intent) => asRecord(intent).intent_id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0),
+    actions: planActions,
+    summary: recalledMemories.length > 0
+      ? `Plan synthesized with ${recalledMemories.length} recalled memory records and ${recalledBridgeReferences.length} bridged knowledge references.`
+      : "Plan synthesized from current observations and objective without prior context.",
+  };
+
+  // ════════════════════════════════════════════════════════════════
+  // PHASE 4: PROPOSE — Risk-classify actions, block unsafe, create records
+  // ════════════════════════════════════════════════════════════════
+
+  const proposedActions = asArray(args.proposed_actions);
+  const classifiedActions: Array<Record<string, unknown>> = [];
+  const blockedActions: Array<Record<string, unknown>> = [];
+  const approvalRequestRecords: Array<Record<string, unknown>> = [];
+
+  for (let i = 0; i < proposedActions.length; i++) {
+    const action = asRecord(proposedActions[i]);
+    const riskClassification = classifyActionRisk(action);
+
+    const classifiedAction: Record<string, unknown> = {
+      ...action,
+      risk_level: riskClassification.risk_level,
+      approval_required: riskClassification.approval_required,
+      expected_outcome: asOptionalString(action.expected_outcome) ?? asOptionalString(action.description) ?? `Outcome of action: ${asOptionalString(action.action ?? action.type ?? action.kind) ?? `action-${i + 1}`}`,
+      status: riskClassification.blocked ? "awaiting_approval" : (asOptionalString(action.status) ?? "ready"),
+      correlation_id: correlationId,
+    };
+
+    classifiedActions.push(classifiedAction);
+
+    if (riskClassification.blocked) {
+      blockedActions.push({
+        action_reference: asOptionalString(action.action ?? action.type ?? action.kind) ?? `proposed_action_${i}`,
+        risk_level: riskClassification.risk_level,
+        blocked_reason: riskClassification.blocked_reason ?? "Action requires approval",
+        original_action: action,
+        correlation_id: correlationId,
+      });
+
+      // Persist an approval request in memory
+      const approvalMemory = storeTypedMemoryRecord({
+        category: "approval_request",
+        content: `Approval required for ${riskClassification.risk_level} action: ${asOptionalString(action.action ?? action.type ?? action.kind) ?? `action-${i + 1}`}. ${riskClassification.blocked_reason ?? ""}`,
+        metadata: {
+          proposed_action_index: i,
+          risk_level: riskClassification.risk_level,
+          blocked_reason: riskClassification.blocked_reason,
+          objective,
+        },
+        trace: {
+          source: "business_pm_loop_propose",
+          correlationId,
+          runId,
+          timestamp: observedAt,
+          confidence: "high",
+        },
+      });
+      approvalRequestRecords.push({
+        memory_id: approvalMemory.id,
+        category: approvalMemory.category,
+        action_index: i,
+        risk_level: riskClassification.risk_level,
+      });
+
+      // Create a capability request for the blocked action if it needs a specific capability
+      if (riskClassification.risk_level === "dangerous-global-mutation" && FLEET_CONTROL_PLANE.isConfigured()) {
+        try {
+          if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "propose")) {
+            await FLEET_CONTROL_PLANE.requestCapability({
+              capability: `approval_for_${riskClassification.risk_level}_action`,
+              justification: `[${correlationId}] Action "${asOptionalString(action.action ?? action.type ?? action.kind) ?? `action-${i + 1}`}" is classified as ${riskClassification.risk_level} and requires explicit human approval: ${riskClassification.blocked_reason ?? "policy requires approval"}`,
+              requested_by: FLEET_AGENT_NAME,
+            });
+          }
+        } catch (error) {
+          cycleErrors.push(`request_capability for blocked action ${i} failed`);
+          queueFleetRetry("request_capability", correlationId, runId, error);
+        }
+      }
+
+      // Queue a local task for browser/session-bound actions
+      if (riskClassification.risk_level === "dangerous-global-mutation" && FLEET_CONTROL_PLANE.isConfigured()) {
+        const actionTypeLower = (asOptionalString(action.type ?? action.action ?? action.kind) ?? "").toLowerCase();
+        if (/browser|portal|session|gmail|taxnet|matrix|mls|cad|comet/i.test(actionTypeLower)) {
+          try {
+            if (!shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "propose")) {
+              await FLEET_CONTROL_PLANE.queueLocalTask({
+                kind: "browser",
+                payload: {
+                  ...action,
+                  correlation_id: correlationId,
+                  run_id: runId,
+                  objective,
+                  risk_level: riskClassification.risk_level,
+                  queued_at: observedAt,
+                  created_by: FLEET_AGENT_NAME,
+                },
+                description: `Browser/session-bound task for ${objective}: ${asOptionalString(action.action ?? action.type ?? action.kind) ?? `action-${i + 1}`}`,
+                source: FLEET_AGENT_NAME,
+                dedup_key: `${correlationId}:blocked:${i}:${actionTypeLower}`,
+                ttl_seconds: 600,
+              });
+            }
+          } catch (error) {
+            cycleErrors.push(`queue_local_task for blocked action ${i} failed`);
+            queueFleetRetry("queue_local_task", correlationId, runId, error);
+          }
+        }
+      }
+    }
+  }
+
+  // Signal coordination intents
+  const signaledIntents: Array<Record<string, unknown>> = [];
+  const coordinationIntentRequests = asArray(args.coordination_intents);
+  for (let index = 0; index < coordinationIntentRequests.length; index += 1) {
+    const intentReq = asRecord(coordinationIntentRequests[index]);
+    const targetAgent = typeof intentReq.target_agent === "string" ? intentReq.target_agent.trim() : "";
+    const kind = typeof intentReq.kind === "string" ? intentReq.kind.trim() : "";
+    if (!targetAgent || !kind) {
+      cycleErrors.push(`coordination_intents[${index}] missing target_agent or kind`);
+      continue;
+    }
+    const sourceAgent = typeof intentReq.source_agent === "string" && intentReq.source_agent.trim().length > 0
+      ? intentReq.source_agent.trim()
+      : FLEET_AGENT_NAME;
+    const payload = redactMetadata({
+      ...asRecord(intentReq.payload),
+      correlation_id: correlationId,
+      run_id: runId,
+      objective,
+      requested_at: observedAt,
+    }) as Record<string, unknown>;
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "signal_intent", "propose")) {
+        throw new Error("Simulated signal_intent failure");
+      }
+      const result = asRecord(await FLEET_CONTROL_PLANE.signalIntent({
+        target_agent: targetAgent,
+        kind,
+        payload,
+        source_agent: sourceAgent,
+      }));
+      signaledIntents.push({
+        intent_id: result.intent_id ?? null,
+        target_agent: targetAgent,
+        kind,
+        source_agent: sourceAgent,
+      });
+    } catch (error) {
+      cycleErrors.push(`signal_intent failed for coordination_intents[${index}]`);
+      queueFleetRetry("signal_intent", correlationId, runId, error);
+    }
+  }
+
+  // Queue local tasks
+  const queuedLocalTasks: Array<Record<string, unknown>> = [];
+  const localTaskRequests = asArray(args.local_tasks);
+  for (let index = 0; index < localTaskRequests.length; index += 1) {
+    const taskReq = asRecord(localTaskRequests[index]);
+    const kind = typeof taskReq.kind === "string" ? taskReq.kind.trim() : "";
+    if (!kind) {
+      cycleErrors.push(`local_tasks[${index}] missing kind`);
+      continue;
+    }
+    const payload = redactMetadata({
+      ...asRecord(taskReq.payload),
+      correlation_id: correlationId,
+      run_id: runId,
+      objective,
+      queued_at: observedAt,
+      created_by: FLEET_AGENT_NAME,
+    }) as Record<string, unknown>;
+    const source = typeof taskReq.source === "string" && taskReq.source.trim().length > 0
+      ? taskReq.source.trim()
+      : FLEET_AGENT_NAME;
+    const description = typeof taskReq.description === "string" && taskReq.description.trim().length > 0
+      ? taskReq.description
+      : `Local/browser task for ${objective} [${correlationId}]`;
+    const dedupKey = typeof taskReq.dedup_key === "string" && taskReq.dedup_key.trim().length > 0
+      ? taskReq.dedup_key
+      : `${correlationId}:local:${index}:${kind}`;
+    const ttlSeconds = Math.max(60, asNonNegativeInt(taskReq.ttl_seconds, 600));
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "propose")) {
+        throw new Error("Simulated queue_local_task failure");
+      }
+      const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
+        kind,
+        payload,
+        description,
+        source,
+        dedup_key: dedupKey,
+        ttl_seconds: ttlSeconds,
+      }));
+      queuedLocalTasks.push({
+        task_id: queued.task_id ?? queued.id ?? queued.local_task_id ?? null,
+        kind,
+        source,
+        status: queued.status ?? queued.state ?? null,
+      });
+    } catch (error) {
+      cycleErrors.push(`queue_local_task failed for local_tasks[${index}]`);
+      queueFleetRetry("queue_local_task", correlationId, runId, error);
+    }
+  }
+
+  // File capability requests
+  const filedCapabilityRequests: Array<Record<string, unknown>> = [];
+  const capabilityRequests = asArray(args.capability_requests);
+  for (let index = 0; index < capabilityRequests.length; index += 1) {
+    const req = asRecord(capabilityRequests[index]);
+    const capability = typeof req.capability === "string" ? req.capability.trim() : "";
+    const justificationRaw = typeof req.justification === "string" ? req.justification.trim() : "";
+    if (!capability || !justificationRaw) {
+      cycleErrors.push(`capability_requests[${index}] missing capability or justification`);
+      continue;
+    }
+    const requestedBy = typeof req.requested_by === "string" && req.requested_by.trim().length > 0
+      ? req.requested_by.trim()
+      : FLEET_AGENT_NAME;
+    const justification = redactSecrets(justificationRaw.includes(correlationId)
+      ? justificationRaw
+      : `[${correlationId}] ${justificationRaw}`);
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "request_capability", "capability_requests")) {
+        throw new Error("Simulated request_capability failure");
+      }
+      const result = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
+        capability,
+        justification,
+        requested_by: requestedBy,
+      }));
+      filedCapabilityRequests.push({
+        capability,
+        request_id: result.id ?? result.request_id ?? null,
+        status: result.status ?? "pending",
+        requested_by: requestedBy,
+      });
+    } catch (error) {
+      cycleErrors.push(`request_capability failed for capability_requests[${index}]`);
+      queueFleetRetry("request_capability", correlationId, runId, error);
+    }
+  }
+
+  const proposeSection = {
+    actions: classifiedActions,
+    blocked_actions: blockedActions,
+    approval_requests: approvalRequestRecords,
+    coordination_intents: signaledIntents,
+    local_tasks: queuedLocalTasks,
+    capability_requests: filedCapabilityRequests,
+    correlation_id: correlationId,
+    generated_at: observedAt,
+  };
+
+  // ════════════════════════════════════════════════════════════════
+  // PHASE 5: LEARN — Persist learning and decision records
+  // ════════════════════════════════════════════════════════════════
+
+  const normalizedLearnings = normalizeLearningEntries(
+    asArray(args.learnings),
+    correlationId,
+    runId,
+    observedAt,
+  );
+
+  const learningMemoryRecords: Array<Record<string, unknown>> = [];
+  const decisionMemoryRecords: Array<Record<string, unknown>> = [];
+  const mottoSkillsBridges: BridgeResult[] = [];
+
+  // Persist learning records
+  for (const learning of normalizedLearnings) {
+    const learningMemory = storeTypedMemoryRecord({
+      category: learning.category,
+      content: learning.content,
+      metadata: {
+        ...learning.metadata,
+        repeated: learning.repeated,
+        material: learning.material,
+      },
+      trace: {
+        source: asOptionalString(learning.metadata.source) ?? "business_pm_loop_learning",
+        correlationId,
+        runId,
+        timestamp: observedAt,
+        confidence: learning.metadata.confidence,
+      },
+    });
+    learningMemoryRecords.push({
+      memory_id: learningMemory.id,
+      category: learningMemory.category,
+      repeated: learning.repeated,
+      material: learning.material,
+      content_preview: learning.content.slice(0, 200),
+    });
+
+    // Bridge material/repeated learnings to motto-skills
+    if (learning.repeated || learning.material) {
+      try {
+        const bridge = bridgeLearningToMottoSkills(learning, correlationId, runId, learningMemory.id);
+        const bridgeMemory = storeTypedMemoryRecord({
+          category: learning.category,
+          content: `Bridged learning to ${bridge.store_type} (${bridge.record_id})`,
+          metadata: {
+            ...learning.metadata,
+            bridge_status: "bridged",
+            bridge_store_type: bridge.store_type,
+            bridge_record_id: bridge.record_id,
+            bridge_store_path: bridge.store_path,
+            bridge_action: bridge.action,
+            bridged_from_memory_id: learningMemory.id,
+          },
+          trace: {
+            source: "motto_skills_bridge",
+            correlationId,
+            runId,
+            timestamp: observedAt,
+            confidence: "high",
+          },
+        });
+        mottoSkillsBridges.push({ ...bridge, memory_id: bridgeMemory.id });
+      } catch (error) {
+        cycleErrors.push(`motto_skills_bridge failed for learning[${learning.index}]`);
+        queueKnowledgeRetry("motto_skills_bridge", correlationId, runId, error);
+      }
+    }
+  }
+
+  // Always persist a decision record from the cycle outcome
+  const cycleDecisionContent = `Business PM loop decision for objective: ${objective}. ${normalizedLearnings.length > 0 ? `Based on ${normalizedLearnings.length} learning(s).` : "No explicit learnings provided; cycle completed observation and planning phases."}`;
+  const cycleDecision = storeTypedMemoryRecord({
+    category: "decision",
+    content: cycleDecisionContent,
+    metadata: {
+      decision_class: "business_pm_loop_outcome",
+      objective,
+      learning_count: normalizedLearnings.length,
+      recalled_memory_count: recalledMemories.length,
+      recalled_bridge_count: recalledBridgeReferences.length,
+      blocked_action_count: blockedActions.length,
+      approved_action_count: classifiedActions.filter((a) => a.status !== "awaiting_approval").length,
+      plan_action_count: planActions.length,
+    },
+    trace: {
+      source: "business_pm_loop_learn",
+      correlationId,
+      runId,
+      timestamp: observedAt,
+      confidence: normalizedLearnings.length > 0 ? "high" : "medium",
+    },
+  });
+  decisionMemoryRecords.push({
+    memory_id: cycleDecision.id,
+    category: cycleDecision.category,
+    content_preview: cycleDecisionContent.slice(0, 200),
+  });
+
+  // Persist a learning record even if no explicit learnings were provided
+  if (normalizedLearnings.length === 0) {
+    const implicitLearningContent = `Implicit learning from business PM loop: Objective "${objective}" was processed with ${recalledMemories.length} recalled memories, ${observations.length} observations, and ${proposedActions.length} proposed actions. ${blockedActions.length > 0 ? `${blockedActions.length} action(s) were blocked pending approval.` : "No actions were blocked."}`;
+    const implicitLearning = storeTypedMemoryRecord({
+      category: "learning",
+      content: implicitLearningContent,
+      metadata: {
+        learning_type: "implicit_cycle_learning",
+        objective,
+        recalled_memory_count: recalledMemories.length,
+        observation_count: observations.length,
+        proposed_action_count: proposedActions.length,
+        blocked_action_count: blockedActions.length,
+      },
+      trace: {
+        source: "business_pm_loop_learn",
+        correlationId,
+        runId,
+        timestamp: observedAt,
+        confidence: "medium",
+      },
+    });
+    learningMemoryRecords.push({
+      memory_id: implicitLearning.id,
+      category: implicitLearning.category,
+      repeated: false,
+      material: false,
+      content_preview: implicitLearningContent.slice(0, 200),
+    });
+  }
+
+  const learnSection = {
+    learning_records: learningMemoryRecords,
+    decision_records: decisionMemoryRecords,
+    motto_skills_bridges: mottoSkillsBridges,
+    validation_evidence: validationEvidenceEntries(args as unknown as Record<string, unknown>),
+    correlation_id: correlationId,
+    generated_at: observedAt,
+  };
+
+  // ── Emit fleet events/artifacts for each section ──
+
+  const pmLoopSections = [
+    { section: "perceive", data: perceiveSection },
+    { section: "recall", data: recallSection },
+    { section: "plan", data: planSection },
+    { section: "propose", data: proposeSection },
+    { section: "learn", data: learnSection },
+  ];
+
+  const emittedSections: Array<Record<string, unknown>> = [];
+
+  for (const section of pmLoopSections) {
+    const safeData = redactMetadata(section.data);
+
+    let eventId: number | null = null;
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "record_event", section.section)) {
+        throw new Error(`Simulated record_event failure for ${section.section}`);
+      }
+      const eventRes = await FLEET_CONTROL_PLANE.recordEvent({
+        agent_name: FLEET_AGENT_NAME,
+        kind: `pm_loop.${section.section}`,
+        payload: {
+          correlation_id: correlationId,
+          objective,
+          section: section.section,
+          generated_at: observedAt,
+          run_id: runId,
+          data: safeData,
+        },
+        run_id: runId,
+        level: section.section === "propose" && blockedActions.length > 0 ? "warn" : "info",
+      });
+      const rawEventId = asRecord(eventRes).event_id;
+      eventId = typeof rawEventId === "number" ? rawEventId : null;
+    } catch (error) {
+      cycleErrors.push(`record_event(${section.section}) failed`);
+      queueFleetRetry(`record_event(${section.section})`, correlationId, runId, error);
+    }
+
+    let artifactId: number | null = null;
+    try {
+      if (shouldSimulateOperationFailure(simulateFailures, "record_artifact_content", section.section)) {
+        throw new Error(`Simulated record_artifact_content failure for ${section.section}`);
+      }
+      const artifactRes = await FLEET_CONTROL_PLANE.recordArtifactContent({
+        agent_name: FLEET_AGENT_NAME,
+        kind: `business_pm_loop_${section.section}`,
+        name: `${correlationId}-pm-loop-${section.section}.json`,
+        body: JSON.stringify(safeData, null, 2),
+        run_id: runId,
+        intent: objective,
+        repo: BUILD_INFO.repository,
+        meta: {
+          correlation_id: correlationId,
+          run_id: runId,
+          section: section.section,
+          structured: true,
+          generated_at: observedAt,
+        },
+      });
+      const rawArtifactId = asRecord(artifactRes).artifact_id;
+      artifactId = typeof rawArtifactId === "number" ? rawArtifactId : null;
+    } catch (error) {
+      cycleErrors.push(`record_artifact_content(${section.section}) failed`);
+      queueFleetRetry(`record_artifact_content(${section.section})`, correlationId, runId, error);
+    }
+
+    emittedSections.push({
+      section: section.section,
+      event_id: eventId,
+      artifact_id: artifactId,
+      body_format: "json",
+    });
+  }
+
+  // ── Persist cycle knowledge record ──
+  let knowledgeRecordId: string | null = null;
+  const knowledgeWrite = persistCycleKnowledgeRecord({
+    correlationId,
+    runId,
+    objective,
+    observedAt,
+    status: cycleErrors.length === 0 ? "ok" : "degraded",
+    consumedInboundIntents,
+    signaledIntents,
+    queuedLocalTasks,
+    ingestedLocalTaskOutcomes,
+    capabilityRequests: filedCapabilityRequests,
+    learningMemoryRecords,
+    mottoSkillsBridges,
+    errors: cycleErrors,
+    emittedSections,
+    simulateFailures,
+  });
+  if (knowledgeWrite.ok && knowledgeWrite.memoryId) {
+    knowledgeRecordId = knowledgeWrite.memoryId;
+  } else {
+    cycleErrors.push("knowledge_store_write failed");
+    queueKnowledgeRetry("cycle_knowledge_write", correlationId, runId, knowledgeWrite.error ?? "unknown knowledge-store failure");
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // BUSINESS STATUS REPORT (VAL-LOOP-006)
+  // ════════════════════════════════════════════════════════════════
+
+  const statusReport = {
+    current_focus: objective,
+    observed_signals: observations.map((obs) => ({
+      source: asOptionalString(asRecord(obs).source) ?? "unknown",
+      type: asOptionalString(asRecord(obs).type) ?? "observation",
+      summary: asOptionalString(asRecord(obs).summary ?? asRecord(obs).content) ?? "signal observed",
+    })),
+    active_projects: recalledMemories
+      .filter((m) => m.category === "project")
+      .map((m) => ({
+        memory_id: m.memory_id,
+        summary: asOptionalString(m.content) ?? "active project",
+      })),
+    active_workflows: recalledMemories
+      .filter((m) => m.category === "workflow")
+      .map((m) => ({
+        memory_id: m.memory_id,
+        summary: asOptionalString(m.content) ?? "active workflow",
+      })),
+    pending_approvals: blockedActions.length + fleetLifecycleState.pendingApprovals,
+    blocked_capabilities: currentBlockedCapabilities(),
+    risks: blockedActions.map((ba) => ({
+      action: asOptionalString(asRecord(ba).action_reference) ?? "unknown",
+      risk_level: asOptionalString(asRecord(ba).risk_level) ?? "unknown",
+      reason: asOptionalString(asRecord(ba).blocked_reason) ?? "requires approval",
+    })),
+    next_steps: planActions.map((pa) => ({
+      step: pa.step,
+      priority: pa.priority,
+      status: pa.status,
+    })),
+    correlation_id: correlationId,
+    generated_at: observedAt,
+  };
+
+  // Emit status report as fleet event/artifact
+  try {
+    if (!shouldSimulateOperationFailure(simulateFailures, "record_artifact_content", "status_report")) {
+      await FLEET_CONTROL_PLANE.recordArtifactContent({
+        agent_name: FLEET_AGENT_NAME,
+        kind: "business_status_report",
+        name: `${correlationId}-status-report.json`,
+        body: JSON.stringify(redactMetadata(statusReport), null, 2),
+        run_id: runId,
+        intent: objective,
+        repo: BUILD_INFO.repository,
+        meta: { correlation_id: correlationId, run_id: runId, section: "status_report", structured: true, generated_at: observedAt },
+      });
+    }
+  } catch (error) {
+    cycleErrors.push("record_artifact_content(status_report) failed");
+    queueFleetRetry("record_artifact_content(status_report)", correlationId, runId, error);
+  }
+
+  // ── End fleet run ──
+  const finalStatus: "success" | "error" = cycleErrors.length === 0 ? "success" : "error";
+
+  try {
+    await FLEET_CONTROL_PLANE.recordRunEnd({
+      run_id: runId,
+      status: finalStatus,
+      summary: {
+        correlation_id: correlationId,
+        objective,
+        emitted_sections: emittedSections,
+        errors: cycleErrors,
+        pending_retry_count: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId).length,
+        pending_knowledge_retry_count: fleetLifecycleState.pendingKnowledgeRetries
+          .filter((retry) => retry.correlation_id === correlationId).length,
+        knowledge_record_id: knowledgeRecordId,
+        learning_count: learningMemoryRecords.length,
+        decision_count: decisionMemoryRecords.length,
+        blocked_action_count: blockedActions.length,
+      },
+    });
+  } catch (error) {
+    queueFleetRetry("record_run_end", correlationId, runId, error);
+  }
+
+  fleetLifecycleState.lastLearnCycle = observedAt;
+  try {
+    await sendFleetHeartbeat(finalStatus === "success" ? "idle" : "degraded", objective);
+  } catch (error) {
+    queueFleetRetry("heartbeat_pm_loop_end", correlationId, runId, error);
+  }
+
+  // ── Build final structured output ──
+  const loopResult = {
+    perceive: perceiveSection,
+    recall: recallSection,
+    plan: planSection,
+    propose: proposeSection,
+    learn: learnSection,
+    status_report: statusReport,
+    metadata: {
+      correlation_id: correlationId,
+      run_id: runId,
+      status: finalStatus === "success" ? "ok" : "degraded",
+      errors: cycleErrors,
+      emitted_sections: emittedSections,
+      knowledge_record_id: knowledgeRecordId,
+      pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+      pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries.filter((retry) => retry.correlation_id === correlationId),
+      heartbeat: buildHeartbeatStatus(finalStatus === "success" ? "idle" : "degraded", objective),
+    },
+  };
+
+  return {
+    content: [{ type: "text", text: JSON.stringify(redactMetadata(loopResult), null, 2) }],
+    isError: finalStatus !== "success",
+  };
+}
+
+// ─── Business Status Report handler ────────────────────────────────
+
+async function handleBusinessStatusReport(args: { focus?: string; correlation_id?: string }) {
+  const focus = redactSecrets((args.focus ?? "").trim());
+  const correlationId = normalizeCorrelationId(args.correlation_id);
+
+  // Recall project and workflow records
+  const projects: Array<Record<string, unknown>> = [];
+  const workflows: Array<Record<string, unknown>> = [];
+  try {
+    const projStmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'project' ORDER BY created_at DESC LIMIT 10");
+    while (projStmt.step()) {
+      const row = projStmt.getAsObject() as Record<string, unknown>;
+      projects.push({ memory_id: row.id, content: row.content, metadata: parseMetadata(row.metadata), created_at: row.created_at });
+    }
+    projStmt.free();
+
+    const wfStmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'workflow' ORDER BY created_at DESC LIMIT 10");
+    while (wfStmt.step()) {
+      const row = wfStmt.getAsObject() as Record<string, unknown>;
+      workflows.push({ memory_id: row.id, content: row.content, metadata: parseMetadata(row.metadata), created_at: row.created_at });
+    }
+    wfStmt.free();
+  } catch {
+    // Read is best-effort
+  }
+
+  // Recall recent observations
+  const recentObservations: Array<Record<string, unknown>> = [];
+  try {
+    const obsStmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'observation' ORDER BY created_at DESC LIMIT 10");
+    while (obsStmt.step()) {
+      const row = obsStmt.getAsObject() as Record<string, unknown>;
+      recentObservations.push({ memory_id: row.id, content: row.content, metadata: parseMetadata(row.metadata), created_at: row.created_at });
+    }
+    obsStmt.free();
+  } catch {
+    // Read is best-effort
+  }
+
+  // Recall pending approvals
+  const pendingApprovals: Array<Record<string, unknown>> = [];
+  try {
+    const appStmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'approval_request' ORDER BY created_at DESC LIMIT 10");
+    while (appStmt.step()) {
+      const row = appStmt.getAsObject() as Record<string, unknown>;
+      pendingApprovals.push({ memory_id: row.id, content: row.content, metadata: parseMetadata(row.metadata), created_at: row.created_at });
+    }
+    appStmt.free();
+  } catch {
+    // Read is best-effort
+  }
+
+  const statusReport = {
+    current_focus: focus || fleetLifecycleState.lastLearnCycle
+      ? `Business operations (last learn: ${fleetLifecycleState.lastLearnCycle ?? "never"})`
+      : "No active focus",
+    observed_signals: recentObservations.map((obs) => ({
+      memory_id: obs.memory_id,
+      source: asOptionalString(asRecord(obs.metadata).source) ?? "hermes_memory",
+      summary: asOptionalString(obs.content) ?? "observation recorded",
+      timestamp: obs.created_at,
+    })),
+    active_projects: projects.map((p) => ({
+      memory_id: p.memory_id,
+      summary: asOptionalString(p.content) ?? "active project",
+      status: asOptionalString(asRecord(p.metadata).status) ?? "unknown",
+    })),
+    active_workflows: workflows.map((w) => ({
+      memory_id: w.memory_id,
+      summary: asOptionalString(w.content) ?? "active workflow",
+    })),
+    pending_approvals: pendingApprovals.length + fleetLifecycleState.pendingApprovals,
+    approval_details: pendingApprovals.map((a) => ({
+      memory_id: a.memory_id,
+      risk_level: asOptionalString(asRecord(a.metadata).risk_level) ?? "unknown",
+      summary: asOptionalString(a.content) ?? "approval pending",
+    })),
+    blocked_capabilities: currentBlockedCapabilities(),
+    risks: pendingApprovals.map((a) => ({
+      risk_level: asOptionalString(asRecord(a.metadata).risk_level) ?? "unknown",
+      description: asOptionalString(a.content) ?? "risk identified",
+    })),
+    next_steps: [
+      { step: "Review pending approvals", priority: "high", status: pendingApprovals.length > 0 ? "ready" : "none" },
+      { step: "Address blocked capabilities", priority: "high", status: currentBlockedCapabilities().length > 0 ? "blocked" : "none" },
+      { step: "Continue active project progress", priority: "medium", status: projects.length > 0 ? "ready" : "none" },
+      { step: "Refine workflow patterns", priority: "medium", status: workflows.length > 0 ? "ready" : "none" },
+    ],
+    correlation_id: correlationId,
+    generated_at: nowIso(),
+    heartbeat: buildHeartbeatStatus("reporting", focus || "status_report"),
+  };
+
+  return { content: [{ type: "text", text: JSON.stringify(redactMetadata(statusReport), null, 2) }] };
+}
+
 // ─── Dispatch: policy gate + secret redaction + audit ──────────────
 
 type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
@@ -2128,6 +3307,8 @@ const HANDLERS: Record<string, (a: any) => Promise<ToolResult>> = {
   memory_store: handleMemoryStore, memory_recall: handleMemoryRecall, plan: handlePlan,
   business_management_cycle: handleBusinessManagementCycle,
   fleet_get_run_details: handleFleetGetRunDetails,
+  business_pm_loop: handleBusinessPmLoop,
+  business_status_report: handleBusinessStatusReport,
 };
 
 function redactResult(result: ToolResult): ToolResult {
