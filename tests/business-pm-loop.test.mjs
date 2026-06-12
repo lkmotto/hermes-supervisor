@@ -3,7 +3,7 @@
  * Integration tests for the Hermes business PM loop and status report tools.
  *
  * These tests exercise the live Hermes MCP HTTP surface on 127.0.0.1:8150
- * and validate the behavior specified in VAL-LOOP-001 through VAL-LOOP-006.
+ * and validate the behavior specified in VAL-LOOP-001 through VAL-LOOP-012.
  *
  * Run with: node tests/business-pm-loop.test.mjs
  *
@@ -13,7 +13,7 @@
  *   - No secret values should appear in any response
  */
 
-const HERMES_URL = "http://127.0.0.1:8150";
+const HERMES_URL = process.env.HERMES_URL || "http://127.0.0.1:8150";
 const VALIDATION_PREFIX = "VALIDATION-LOOP";
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -414,6 +414,202 @@ async function testValLoop006_BusinessStatusReport() {
   console.log("  PASS: Status report has all required sections (focus, signals, projects, approvals, capabilities, risks, next_steps)");
 }
 
+async function testValLoop007_ShadowObservationsProvenance() {
+  console.log("\n=== Test: VAL-LOOP-007 Shadow observations include provenance and fact/assumption labeling ===");
+  const correlationId = generateCorrelationId();
+
+  const result = await callTool("business_pm_loop", {
+    objective: `Validate observation provenance fields [${correlationId}]`,
+    correlation_id: correlationId,
+    observations: [
+      {
+        type: "portal_snapshot",
+        summary: "Observed TaxNet portal queue count from dashboard export",
+        source: "workflow_trace",
+        timestamp: new Date().toISOString(),
+        confidence: "high",
+        fact_vs_assumption: "fact",
+      },
+      {
+        type: "handoff_risk",
+        summary: "Likely handoff delay between intake and review queue",
+        source: "analysis_note",
+        confidence: "medium",
+      },
+    ],
+  });
+
+  const observations = result.perceive?.observations || [];
+  assert(observations.length >= 2, "Perceive observations should include both supplied observations");
+
+  let seenFact = false;
+  let seenAssumption = false;
+  for (const obs of observations) {
+    assertHasField(obs, "source", "perceive observation");
+    assertHasField(obs, "timestamp", "perceive observation");
+    assertHasField(obs, "confidence", "perceive observation");
+    assertHasField(obs, "correlation_id", "perceive observation");
+    assertHasField(obs, "fact_vs_assumption", "perceive observation");
+    if (obs.fact_vs_assumption === "fact") seenFact = true;
+    if (obs.fact_vs_assumption === "assumption") seenAssumption = true;
+  }
+
+  assert(seenFact && seenAssumption, "Observations should include both fact and assumption classifications");
+  console.log("  PASS: Observation provenance and fact-vs-assumption labels are present");
+}
+
+async function testValLoop008_LearningChangesNextPlan() {
+  console.log("\n=== Test: VAL-LOOP-008 Learned outcomes change subsequent plan recommendations ===");
+  const seedCorrelationId = generateCorrelationId();
+  const followupCorrelationId = generateCorrelationId();
+
+  const first = await callTool("business_pm_loop", {
+    objective: `Seed blocker learning for follow-up planning [${seedCorrelationId}]`,
+    correlation_id: seedCorrelationId,
+    recall_categories: ["decision", "workflow", "fact", "project"],
+    learnings: [
+      {
+        category: "learning",
+        content: `VAL-LOOP-008 learning: Workflow was blocked by missing TaxNet browser session access [${seedCorrelationId}]`,
+        source: "validation_postmortem",
+        confidence: "high",
+      },
+    ],
+  });
+
+  const second = await callTool("business_pm_loop", {
+    objective: `Re-plan using learned blocker outcomes [${followupCorrelationId}]`,
+    correlation_id: followupCorrelationId,
+    recall_query: seedCorrelationId,
+  });
+
+  const firstActions = first.plan?.actions || [];
+  const secondActions = second.plan?.actions || [];
+  const firstBlockerStep = firstActions.find(a => a.step === "Resolve blocked capabilities and pending approvals");
+  const secondBlockerStep = secondActions.find(a => a.step === "Resolve blocked capabilities and pending approvals");
+
+  assert(second.plan?.learning_influenced_changes?.length > 0,
+    "Second plan should report learning-influenced changes");
+  assert(firstBlockerStep && secondBlockerStep,
+    "Both plans should contain blocker-resolution step");
+  assert(firstBlockerStep.priority !== secondBlockerStep.priority || firstBlockerStep.status !== secondBlockerStep.status,
+    "Second plan should change blocker step priority/status based on learned outcome");
+
+  console.log("  PASS: Stored learning changed subsequent planning priorities/status");
+}
+
+async function testValLoop009_PmGradeExecutionFields() {
+  console.log("\n=== Test: VAL-LOOP-009 Plan actions contain PM-grade execution fields ===");
+  const correlationId = generateCorrelationId();
+
+  const result = await callTool("business_pm_loop", {
+    objective: `Validate PM-grade execution fields [${correlationId}]`,
+    correlation_id: correlationId,
+  });
+
+  const actions = result.plan?.actions || [];
+  assert(actions.length > 0, "Plan should include actionable steps");
+
+  for (const action of actions) {
+    assertHasField(action, "owner", "plan action");
+    assertHasField(action, "target_agent", "plan action");
+    assertHasField(action, "priority", "plan action");
+    assertHasField(action, "dependencies", "plan action");
+    assertHasField(action, "timing", "plan action");
+    assertHasField(action, "due_at", "plan action");
+    assertHasField(action, "next_check_at", "plan action");
+    assertHasField(action, "success_criteria", "plan action");
+    assertHasField(action, "status", "plan action");
+    assertHasField(action, "ready_state", "plan action");
+    assert(["ready", "blocked", "none"].includes(action.status), `Unexpected action status: ${action.status}`);
+  }
+
+  console.log(`  PASS: ${actions.length} actions include owner/target/priority/dependencies/timing/success/status fields`);
+}
+
+async function testValLoop010_WorkflowTraceToReusableKnowledge() {
+  console.log("\n=== Test: VAL-LOOP-010 Workflow trace summaries produce handoffs, gaps, and workflow candidates ===");
+  const correlationId = generateCorrelationId();
+
+  const result = await callTool("business_pm_loop", {
+    objective: `Summarize validation workflow trace into reusable process knowledge [${correlationId}]`,
+    correlation_id: correlationId,
+    workflow_trace: {
+      trace_id: `wf-trace-${correlationId}`,
+      workflow_name: "Validation Appraisal Intake",
+      steps: [
+        { step_id: "s1", actor: "intake", action: "Collect order details", status: "completed" },
+        { step_id: "s2", actor: "review", action: "Review order details", status: "blocked", blocker: "TaxNet session missing", required_capability: "taxnet_session_access", handoff_to: "portal_runner" },
+        { step_id: "s3", actor: "portal_runner", action: "Lookup parcel data", status: "pending" },
+      ],
+    },
+  });
+
+  const summary = result.perceive?.workflow_summary || {};
+  assert(summary.traces_processed >= 1, "Workflow summary should process at least one trace");
+  assert((summary.workflow_candidates || []).length > 0, "Workflow summary should include workflow candidate records");
+  assert((summary.handoffs || []).length > 0, "Workflow summary should identify handoff points");
+  assert((summary.blockers || []).length > 0, "Workflow summary should identify blockers");
+  assert((summary.capability_gaps || []).length > 0, "Workflow summary should classify capability gaps");
+
+  console.log("  PASS: Workflow trace converted into handoffs/blockers/candidate process knowledge");
+}
+
+async function testValLoop011_ProposalLinksToCoordinationRecords() {
+  console.log("\n=== Test: VAL-LOOP-011 Proposals create linked approval/task/capability records ===");
+  const correlationId = generateCorrelationId();
+
+  const result = await callTool("business_pm_loop", {
+    objective: `Validate proposal linkage records [${correlationId}]`,
+    correlation_id: correlationId,
+    proposed_actions: [
+      {
+        action: "submit_taxnet_portal_form",
+        type: "submit portal form browser session",
+        description: "Submit TaxNet update requiring authenticated browser session",
+      },
+    ],
+  });
+
+  const proposalRecords = result.propose?.proposal_records || [];
+  assert(proposalRecords.length > 0, "Propose section should return proposal linkage records");
+  const firstRecord = proposalRecords[0];
+  assertHasField(firstRecord, "correlation_id", "proposal_record");
+  assert(firstRecord.correlation_id === correlationId, "Proposal record correlation_id should match cycle ID");
+  assertHasField(firstRecord, "approval_request_memory_id", "proposal_record");
+  assert(
+    Boolean(firstRecord.capability_request_id) || Boolean(firstRecord.local_task_id),
+    "Blocked business-impacting proposal should link to capability request and/or local task",
+  );
+
+  console.log("  PASS: Proposals now link to durable approval/task/capability records");
+}
+
+async function testValLoop012_UnknownSignalsNotFabricated() {
+  console.log("\n=== Test: VAL-LOOP-012 Unavailable signals are marked unknown/blocked with capability requests ===");
+  const correlationId = generateCorrelationId();
+
+  const result = await callTool("business_pm_loop", {
+    objective: `Validate unknown/blocked handling for missing inputs [${correlationId}]`,
+    correlation_id: correlationId,
+    required_signals: ["wf1_queue_status", "taxnet_session_health"],
+    observations: [],
+  });
+
+  const unknownSignals = result.perceive?.unknown_signals || [];
+  assert(unknownSignals.length >= 2, "Missing required signals should be reported as unknown");
+  for (const missing of unknownSignals) {
+    assert(missing.status === "unknown", `Expected unknown status, got ${missing.status}`);
+    assert(missing.blocker_status === "blocked", `Expected blocked marker, got ${missing.blocker_status}`);
+  }
+
+  const capabilityRequests = result.propose?.capability_requests || [];
+  const missingSignalRequests = capabilityRequests.filter(req => req.source === "missing_signal");
+  assert(missingSignalRequests.length > 0, "Missing signals should produce capability requests");
+
+  console.log("  PASS: Unavailable inputs are marked unknown/blocked and translated into capability requests");
+}
+
 // ─── Run all tests ──────────────────────────────────────────────────
 
 async function main() {
@@ -439,6 +635,12 @@ async function main() {
     testValLoop004_ApprovalGatedProposals,
     testValLoop005_UnsafeActionsBlocked,
     testValLoop006_BusinessStatusReport,
+    testValLoop007_ShadowObservationsProvenance,
+    testValLoop008_LearningChangesNextPlan,
+    testValLoop009_PmGradeExecutionFields,
+    testValLoop010_WorkflowTraceToReusableKnowledge,
+    testValLoop011_ProposalLinksToCoordinationRecords,
+    testValLoop012_UnknownSignalsNotFabricated,
   ];
 
   let passed = 0;

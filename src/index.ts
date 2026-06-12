@@ -1291,9 +1291,30 @@ const tools: Tool[] = [
         objective: { type: "string", description: "Business operations objective or focus area for this loop iteration." },
         correlation_id: { type: "string", description: "Validation correlation ID shared across all generated records." },
         observations: { type: "array", items: { type: "object" }, description: "Observed business signals and process observations for the perceive phase." },
+        required_signals: {
+          type: "array",
+          items: { type: "string" },
+          description: "Signal names required for this cycle. Missing signals are marked unknown/blocked and become capability requests.",
+        },
+        workflow_trace: {
+          type: "object",
+          description: "Optional workflow trace payload to convert into workflow candidates, handoffs, and capability gaps.",
+        },
+        workflow_traces: {
+          type: "array",
+          items: { type: "object" },
+          description: "Optional list of workflow trace payloads to convert into reusable process knowledge.",
+        },
         proposed_actions: { type: "array", items: { type: "object" }, description: "Proposed business actions for risk classification and approval gating." },
         capability_gaps: { type: "array", items: { type: "object" }, description: "Known capability blockers and missing prerequisites." },
         learnings: { type: "array", items: { type: "object" }, description: "Learnings captured from the cycle to persist as learning and decision records." },
+        validation_evidence: {
+          oneOf: [
+            { type: "array", items: { type: "object" } },
+            { type: "object" },
+          ],
+          description: "Validation evidence entries tied to this cycle.",
+        },
         coordination_intents: {
           type: "array",
           items: { type: "object" },
@@ -1317,7 +1338,7 @@ const tools: Tool[] = [
         recall_categories: {
           type: "array",
           items: { type: "string" },
-          description: "Memory categories to recall for the recall phase. Default: decision, workflow, fact, project.",
+          description: "Memory categories to recall for the recall phase. Default: decision, workflow, fact, project, learning, capability_gap.",
         },
         recall_query: {
           type: "string",
@@ -2265,15 +2286,147 @@ function classifyActionRisk(action: Record<string, unknown>): {
   return { risk_level: "low-impact-write", approval_required: false, blocked: false };
 }
 
+type ObservationFactLabel = "fact" | "assumption";
+
+function normalizeObservationFactLabel(raw: unknown): ObservationFactLabel | null {
+  const value = asOptionalString(raw)?.toLowerCase();
+  if (!value) return null;
+  if (["fact", "observed_fact", "observation", "observed"].includes(value)) return "fact";
+  if (["assumption", "inference", "inferred", "hypothesis"].includes(value)) return "assumption";
+  return null;
+}
+
+function inferObservationFactLabel(observation: Record<string, unknown>): ObservationFactLabel {
+  const explicit = normalizeObservationFactLabel(
+    observation.fact_vs_assumption ?? observation.observation_type ?? observation.label,
+  );
+  if (explicit) return explicit;
+
+  const summary = (
+    asOptionalString(observation.summary)
+    ?? asOptionalString(observation.content)
+    ?? asOptionalString(observation.note)
+    ?? ""
+  ).toLowerCase();
+  if (/assum|hypothes|likely|estimate|unknown|unclear|infer/.test(summary)) {
+    return "assumption";
+  }
+
+  const evidence = asOptionalString(observation.evidence_id)
+    ?? asOptionalString(observation.evidence_url)
+    ?? asOptionalString(observation.source_record_id);
+  if (evidence) return "fact";
+
+  const source = (asOptionalString(observation.source) ?? "").toLowerCase();
+  if (/vps|fleet|memory|research|monitor|tool|trace/.test(source)) return "fact";
+  return "assumption";
+}
+
+interface WorkflowTraceSummary {
+  trace_id: string;
+  workflow_name: string;
+  steps: Array<Record<string, unknown>>;
+  handoffs: Array<Record<string, unknown>>;
+  blockers: Array<Record<string, unknown>>;
+  capability_gaps: Array<Record<string, unknown>>;
+}
+
+function summarizeWorkflowTrace(
+  rawTrace: unknown,
+  index: number,
+  correlationId: string,
+  observedAt: string,
+): WorkflowTraceSummary {
+  const trace = asRecord(rawTrace);
+  const traceId = asOptionalString(trace.trace_id) ?? `${correlationId}-trace-${index + 1}`;
+  const workflowName = asOptionalString(trace.workflow_name)
+    ?? asOptionalString(trace.name)
+    ?? `workflow-candidate-${index + 1}`;
+  const rawSteps = asArray(trace.steps ?? trace.trace ?? trace.events ?? trace.workflow_steps);
+  const steps = rawSteps.map((entry, stepIndex) => {
+    const step = asRecord(entry);
+    return {
+      step_index: stepIndex + 1,
+      step_id: asOptionalString(step.step_id) ?? `${traceId}-step-${stepIndex + 1}`,
+      actor: asOptionalString(step.actor) ?? asOptionalString(step.owner) ?? "unknown",
+      action: asOptionalString(step.action) ?? asOptionalString(step.step) ?? asOptionalString(step.name) ?? `step-${stepIndex + 1}`,
+      status: asOptionalString(step.status) ?? "observed",
+      handoff_to: asOptionalString(step.handoff_to) ?? asOptionalString(step.next_actor),
+      blocker: asOptionalString(step.blocker) ?? asOptionalString(step.error),
+      required_capability: asOptionalString(step.required_capability) ?? asOptionalString(step.capability),
+      timestamp: asOptionalString(step.timestamp) ?? asOptionalString(step.observed_at) ?? observedAt,
+    };
+  });
+
+  const handoffs: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < steps.length; i += 1) {
+    const current = asRecord(steps[i]);
+    const next = i + 1 < steps.length ? asRecord(steps[i + 1]) : null;
+    const explicitHandoff = asOptionalString(current.handoff_to);
+    const fromActor = asOptionalString(current.actor) ?? "unknown";
+    const toActor = explicitHandoff
+      ?? (next ? asOptionalString(next.actor) : null)
+      ?? null;
+    if (toActor && toActor !== fromActor) {
+      handoffs.push({
+        from_step_id: current.step_id ?? null,
+        from_actor: fromActor,
+        to_actor: toActor,
+        reason: explicitHandoff ? "explicit_handoff" : "actor_transition",
+      });
+    }
+  }
+
+  const blockers = steps
+    .filter((step) => {
+      const status = (asOptionalString(asRecord(step).status) ?? "").toLowerCase();
+      return status === "blocked" || Boolean(asOptionalString(asRecord(step).blocker));
+    })
+    .map((step) => {
+      const s = asRecord(step);
+      return {
+        step_id: s.step_id ?? null,
+        actor: s.actor ?? null,
+        blocker: asOptionalString(s.blocker) ?? `Step status is ${asOptionalString(s.status) ?? "blocked"}`,
+        required_capability: asOptionalString(s.required_capability),
+      };
+    });
+
+  const capabilityGaps = blockers.reduce<Array<Record<string, unknown>>>((acc, blocker) => {
+    const b = asRecord(blocker);
+    const capability = asOptionalString(b.required_capability);
+    if (!capability) return acc;
+    acc.push({
+      capability,
+      blocker: b.blocker ?? "workflow blocker",
+      trace_id: traceId,
+    });
+    return acc;
+  }, []);
+
+  return {
+    trace_id: traceId,
+    workflow_name: workflowName,
+    steps,
+    handoffs,
+    blockers,
+    capability_gaps: capabilityGaps,
+  };
+}
+
 // ─── Business PM Loop handler ─────────────────────────────────────
 
 interface BusinessPmLoopArgs {
   objective: string;
   correlation_id?: string;
   observations?: unknown[];
+  required_signals?: unknown[];
+  workflow_trace?: unknown;
+  workflow_traces?: unknown[];
   proposed_actions?: unknown[];
   capability_gaps?: unknown[];
   learnings?: unknown[];
+  validation_evidence?: unknown;
   coordination_intents?: unknown[];
   local_tasks?: unknown[];
   capability_requests?: unknown[];
@@ -2361,14 +2514,47 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
   const observations = asArray(args.observations).map((obs) => {
     const r = asRecord(obs);
+    const observationFactLabel = inferObservationFactLabel(r);
     return {
       ...r,
       source: asOptionalString(r.source) ?? "user_input",
       timestamp: asOptionalString(r.timestamp) ?? observedAt,
-      confidence: asOptionalString(r.confidence) ?? "medium",
+      confidence: normalizeConfidence(r.confidence, "medium"),
+      fact_vs_assumption: observationFactLabel,
       correlation_id: correlationId,
     };
   });
+  const observationMemoryRecords: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < observations.length; i += 1) {
+    const observation = asRecord(observations[i]);
+    const observationSummary = asOptionalString(observation.summary)
+      ?? asOptionalString(observation.content)
+      ?? asOptionalString(observation.note)
+      ?? `Observation ${i + 1} for objective "${objective}"`;
+    const storedObservation = storeTypedMemoryRecord({
+      category: "observation",
+      content: observationSummary,
+      metadata: {
+        ...observation,
+        observation_index: i + 1,
+      },
+      trace: {
+        source: asOptionalString(observation.source) ?? "business_pm_loop_perceive",
+        correlationId,
+        runId,
+        timestamp: asOptionalString(observation.timestamp) ?? observedAt,
+        confidence: observation.confidence,
+      },
+    });
+    observationMemoryRecords.push({
+      memory_id: storedObservation.id,
+      category: storedObservation.category,
+      fact_vs_assumption: observation.fact_vs_assumption ?? "assumption",
+      source: observation.source ?? null,
+      timestamp: observation.timestamp ?? observedAt,
+      confidence: observation.confidence ?? "medium",
+    });
+  }
 
   // Consume inbound intents as signals
   const consumedInboundIntents: Array<Record<string, unknown>> = [];
@@ -2395,9 +2581,140 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     correlation_id: correlationId,
   }));
 
+  const requiredSignals = asStringArray(args.required_signals);
+  const observedSignalKeys = new Set<string>([
+    ...observations
+      .map((obs) => asOptionalString(asRecord(obs).type) ?? asOptionalString(asRecord(obs).signal_type))
+      .filter((signal): signal is string => Boolean(signal))
+      .map((signal) => signal.toLowerCase()),
+    ...perceivedSignals
+      .map((signal) => asOptionalString(asRecord(signal).signal_type) ?? asOptionalString(asRecord(signal).kind))
+      .filter((signal): signal is string => Boolean(signal))
+      .map((signal) => signal.toLowerCase()),
+  ]);
+
+  const unknownSignals = requiredSignals
+    .filter((signal) => !observedSignalKeys.has(signal.toLowerCase()))
+    .map((signal) => ({
+      signal,
+      status: "unknown",
+      blocker_status: "blocked",
+      reason: "required signal not observed in current cycle",
+      correlation_id: correlationId,
+    }));
+
+  const unknownSignalCapabilityRequests: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < unknownSignals.length; i += 1) {
+    const missing = asRecord(unknownSignals[i]);
+    const capabilityName = `signal_access_${asOptionalString(missing.signal) ?? `unknown_${i + 1}`}`;
+    try {
+      if (FLEET_CONTROL_PLANE.isConfigured()
+        && !shouldSimulateOperationFailure(simulateFailures, "request_capability", "missing_signals")) {
+        const capabilityResult = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
+          capability: capabilityName,
+          justification: `[${correlationId}] Required signal "${asOptionalString(missing.signal) ?? "unknown"}" is unavailable; mark status as unknown/blocked and request capability access.`,
+          requested_by: FLEET_AGENT_NAME,
+        }));
+        unknownSignalCapabilityRequests.push({
+          capability: capabilityName,
+          request_id: capabilityResult.id ?? capabilityResult.request_id ?? null,
+          status: capabilityResult.status ?? "pending",
+          source: "missing_signal",
+          signal: missing.signal ?? null,
+        });
+      }
+    } catch (error) {
+      cycleErrors.push(`request_capability for missing signal ${i} failed`);
+      queueFleetRetry("request_capability", correlationId, runId, error);
+    }
+
+    storeTypedMemoryRecord({
+      category: "capability_gap",
+      content: `Signal "${asOptionalString(missing.signal) ?? "unknown"}" unavailable; status marked unknown/blocked.`,
+      metadata: {
+        source: "business_pm_loop_perceive",
+        signal: missing.signal ?? null,
+        status: "unknown",
+        blocker_status: "blocked",
+        capability: capabilityName,
+      },
+      trace: {
+        source: "business_pm_loop_perceive",
+        correlationId,
+        runId,
+        timestamp: observedAt,
+        confidence: "high",
+      },
+    });
+  }
+
+  const workflowTraces = [
+    ...(args.workflow_trace ? [args.workflow_trace] : []),
+    ...asArray(args.workflow_traces),
+  ];
+  const workflowSummaries: WorkflowTraceSummary[] = workflowTraces.map((trace, index) =>
+    summarizeWorkflowTrace(trace, index, correlationId, observedAt),
+  );
+  const workflowCandidateRecords: Array<Record<string, unknown>> = [];
+  const workflowDerivedCapabilityGaps: Array<Record<string, unknown>> = [];
+
+  for (let i = 0; i < workflowSummaries.length; i += 1) {
+    const summary = workflowSummaries[i];
+    const storedWorkflow = storeTypedMemoryRecord({
+      category: "workflow",
+      content: `Workflow candidate "${summary.workflow_name}" from trace ${summary.trace_id}: ${summary.steps.length} steps, ${summary.handoffs.length} handoffs, ${summary.blockers.length} blockers.`,
+      metadata: {
+        source: "workflow_trace",
+        trace_id: summary.trace_id,
+        workflow_name: summary.workflow_name,
+        step_count: summary.steps.length,
+        handoff_count: summary.handoffs.length,
+        blocker_count: summary.blockers.length,
+        steps: summary.steps,
+        handoffs: summary.handoffs,
+        blockers: summary.blockers,
+      },
+      trace: {
+        source: "workflow_trace",
+        correlationId,
+        runId,
+        timestamp: observedAt,
+        confidence: summary.steps.length > 0 ? "high" : "medium",
+      },
+    });
+    workflowCandidateRecords.push({
+      memory_id: storedWorkflow.id,
+      category: storedWorkflow.category,
+      trace_id: summary.trace_id,
+      workflow_name: summary.workflow_name,
+      handoff_count: summary.handoffs.length,
+      blocker_count: summary.blockers.length,
+    });
+
+    for (const gap of summary.capability_gaps) {
+      const capability = asOptionalString(gap.capability);
+      if (!capability) continue;
+      workflowDerivedCapabilityGaps.push({
+        capability,
+        reason: asOptionalString(gap.blocker) ?? "workflow trace blocker",
+        trace_id: summary.trace_id,
+        source: "workflow_trace",
+      });
+    }
+  }
+
   const perceiveSection = {
     observations,
     signals: perceivedSignals,
+    observation_records: observationMemoryRecords,
+    unknown_signals: unknownSignals,
+    workflow_summary: {
+      traces_processed: workflowSummaries.length,
+      workflow_candidates: workflowCandidateRecords,
+      handoffs: workflowSummaries.flatMap((summary) => summary.handoffs),
+      blockers: workflowSummaries.flatMap((summary) => summary.blockers),
+      capability_gaps: workflowDerivedCapabilityGaps,
+    },
     consumed_intents_count: consumedInboundIntents.length,
     correlation_id: correlationId,
     generated_at: observedAt,
@@ -2407,7 +2724,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   // PHASE 2: RECALL — Retrieve prior decisions, workflows, memories
   // ════════════════════════════════════════════════════════════════
 
-  const defaultRecallCategories = ["decision", "workflow", "fact", "project"];
+  const defaultRecallCategories = ["decision", "workflow", "fact", "project", "learning", "capability_gap"];
   const recallCategories = asStringArray(args.recall_categories).length > 0
     ? asStringArray(args.recall_categories)
     : defaultRecallCategories;
@@ -2495,8 +2812,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     prior_workflows: recalledMemories.filter((m) => m.category === "workflow"),
     prior_facts: recalledMemories.filter((m) => m.category === "fact"),
     prior_projects: recalledMemories.filter((m) => m.category === "project"),
+    prior_learnings: recalledMemories.filter((m) => m.category === "learning"),
+    prior_capability_gaps: recalledMemories.filter((m) => m.category === "capability_gap"),
     other_memories: recalledMemories.filter(
-      (m) => !["decision", "workflow", "fact", "project"].includes(m.category as string),
+      (m) => !["decision", "workflow", "fact", "project", "learning", "capability_gap"].includes(m.category as string),
     ),
     bridged_knowledge: recalledBridgeReferences,
     local_task_outcomes: ingestedLocalTaskOutcomes,
@@ -2516,56 +2835,121 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     record_id: b.bridge_record_id,
     store_path: b.bridge_store_path,
   }));
+  const explicitCapabilityGaps = asArray(args.capability_gaps).map((gap) => asRecord(gap));
+  const missingSignalCapabilityGaps = unknownSignals.map((missing) => ({
+    capability: `signal_access_${asOptionalString(asRecord(missing).signal) ?? "unknown"}`,
+    reason: asOptionalString(asRecord(missing).reason) ?? "missing signal",
+    source: "missing_signal",
+  }));
+  const capabilityGaps = [
+    ...explicitCapabilityGaps,
+    ...workflowDerivedCapabilityGaps,
+    ...missingSignalCapabilityGaps,
+  ];
+
+  const recalledLearningRecords = recalledMemories.filter((m) => m.category === "learning" || m.category === "capability_gap");
+  const learningInfluencedChanges: string[] = [];
+  let executeSafePriority: "high" | "medium" | "low" = "high";
+  let resolveBlockersPriority: "high" | "medium" | "low" = capabilityGaps.length > 0 ? "high" : "medium";
+  let resolveBlockersStatus: "ready" | "blocked" = capabilityGaps.length > 0 ? "blocked" : "ready";
+
+  for (const learningRecord of recalledLearningRecords) {
+    const content = (asOptionalString(learningRecord.content) ?? "").toLowerCase();
+    if (/blocked|missing|failed|unknown|unable|gap|pending/.test(content)) {
+      resolveBlockersPriority = "high";
+      resolveBlockersStatus = "blocked";
+      learningInfluencedChanges.push(
+        `Prior learning ${asOptionalString(learningRecord.memory_id) ?? "unknown"} indicates blocker risk, so blocker-resolution priority was raised.`,
+      );
+    }
+    if (/success|succeeded|completed|resolved|unblocked/.test(content)) {
+      executeSafePriority = "medium";
+      learningInfluencedChanges.push(
+        `Prior learning ${asOptionalString(learningRecord.memory_id) ?? "unknown"} indicates successful completion, so execution priority was tempered for validation focus.`,
+      );
+    }
+  }
+
+  if (learningInfluencedChanges.length === 0 && recalledLearningRecords.length > 0) {
+    learningInfluencedChanges.push(
+      `Prior learning records (${recalledLearningRecords.length}) were cited and retained as planning evidence with no additional risk/priority override.`,
+    );
+  }
+
+  const nextCheckAt = new Date(Date.parse(observedAt) + (30 * 60 * 1000)).toISOString();
+  const dueAt = new Date(Date.parse(observedAt) + (24 * 60 * 60 * 1000)).toISOString();
 
   const planActions = [
     {
       step: "Review and triage observations",
       owner: "hermes",
+      target_agent: "hermes",
       priority: "high",
       dependencies: [],
       timing: "immediate",
-      success_criteria: "All observations categorized and prioritized",
+      due_at: dueAt,
+      next_check_at: nextCheckAt,
+      success_criteria: "All observations categorized with provenance and fact-vs-assumption labels",
       status: "ready",
-      evidence_ids: [],
+      ready_state: "ready",
+      evidence_ids: observationMemoryRecords.map((record) => asOptionalString(record.memory_id)).filter((id): id is string => Boolean(id)),
     },
     {
       step: "Integrate recalled decisions and workflows into current plan",
       owner: "hermes",
+      target_agent: "hermes",
       priority: "high",
-      dependencies: [],
+      dependencies: ["Review and triage observations"],
       timing: "immediate",
-      success_criteria: "Prior context properly referenced and applied",
-      status: citedRecordIds.length > 0 ? "ready" : "none",
+      due_at: dueAt,
+      next_check_at: nextCheckAt,
+      success_criteria: "Prior context properly referenced and applied to recommendations",
+      status: citedRecordIds.length > 0 ? "ready" : "blocked",
+      ready_state: citedRecordIds.length > 0 ? "ready" : "blocked",
       evidence_ids: citedRecordIds,
     },
     {
       step: "Execute safe proposed actions",
       owner: "hermes",
-      priority: "high",
-      dependencies: ["Review and triage observations"],
+      target_agent: "hermes",
+      priority: executeSafePriority,
+      dependencies: ["Integrate recalled decisions and workflows into current plan"],
       timing: "next_cycle",
-      success_criteria: "All safe actions completed or queued",
+      due_at: dueAt,
+      next_check_at: nextCheckAt,
+      success_criteria: "All safe actions completed or queued with traceable records",
       status: "ready",
+      ready_state: "ready",
       evidence_ids: [],
     },
     {
       step: "Resolve blocked capabilities and pending approvals",
       owner: "hermes",
-      priority: "medium",
+      target_agent: "hermes+approver",
+      priority: resolveBlockersPriority,
       dependencies: ["Execute safe proposed actions"],
       timing: "next_cycle",
-      success_criteria: "Blockers resolved or escalated",
-      status: "blocked",
-      evidence_ids: [],
+      due_at: dueAt,
+      next_check_at: nextCheckAt,
+      success_criteria: "Blockers resolved, or capability requests/local tasks created with correlation links",
+      status: resolveBlockersStatus,
+      ready_state: resolveBlockersStatus === "blocked" ? "blocked" : "ready",
+      evidence_ids: capabilityGaps
+        .map((gap) => asOptionalString(asRecord(gap).capability))
+        .filter((id): id is string => Boolean(id)),
     },
     {
       step: "Capture and persist learning outcomes",
       owner: "hermes",
+      target_agent: "hermes",
       priority: "medium",
       dependencies: ["Execute safe proposed actions"],
       timing: "end_of_cycle",
-      success_criteria: "All learnings and decisions persisted with metadata",
+      due_at: dueAt,
+      next_check_at: nextCheckAt,
+      success_criteria: "All learnings and decisions persisted with typed metadata and source provenance",
       status: "ready",
+      ready_state: "ready",
       evidence_ids: [],
     },
   ];
@@ -2579,9 +2963,11 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     inbound_intent_ids: consumedInboundIntents
       .map((intent) => asRecord(intent).intent_id)
       .filter((id): id is string => typeof id === "string" && id.length > 0),
+    learning_influenced_changes: learningInfluencedChanges,
+    unknown_signals: unknownSignals,
     actions: planActions,
     summary: recalledMemories.length > 0
-      ? `Plan synthesized with ${recalledMemories.length} recalled memory records and ${recalledBridgeReferences.length} bridged knowledge references.`
+      ? `Plan synthesized with ${recalledMemories.length} recalled memory records, ${recalledBridgeReferences.length} bridged references, and ${learningInfluencedChanges.length} learning-driven adjustment(s).`
       : "Plan synthesized from current observations and objective without prior context.",
   };
 
@@ -2593,16 +2979,30 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const classifiedActions: Array<Record<string, unknown>> = [];
   const blockedActions: Array<Record<string, unknown>> = [];
   const approvalRequestRecords: Array<Record<string, unknown>> = [];
+  const proposalRecordLinks: Array<Record<string, unknown>> = [];
+  const signaledIntents: Array<Record<string, unknown>> = [];
+  const queuedLocalTasks: Array<Record<string, unknown>> = [];
+  const filedCapabilityRequests: Array<Record<string, unknown>> = [...unknownSignalCapabilityRequests];
 
   for (let i = 0; i < proposedActions.length; i++) {
     const action = asRecord(proposedActions[i]);
     const riskClassification = classifyActionRisk(action);
+    const actionReference = asOptionalString(action.action ?? action.type ?? action.kind) ?? `proposed_action_${i}`;
+    const proposalLink: Record<string, unknown> = {
+      action_index: i,
+      action_reference: actionReference,
+      correlation_id: correlationId,
+      run_id: runId,
+      risk_level: riskClassification.risk_level,
+      approval_required: riskClassification.approval_required,
+      link_status: "classified",
+    };
 
     const classifiedAction: Record<string, unknown> = {
       ...action,
       risk_level: riskClassification.risk_level,
       approval_required: riskClassification.approval_required,
-      expected_outcome: asOptionalString(action.expected_outcome) ?? asOptionalString(action.description) ?? `Outcome of action: ${asOptionalString(action.action ?? action.type ?? action.kind) ?? `action-${i + 1}`}`,
+      expected_outcome: asOptionalString(action.expected_outcome) ?? asOptionalString(action.description) ?? `Outcome of action: ${actionReference}`,
       status: riskClassification.blocked ? "awaiting_approval" : (asOptionalString(action.status) ?? "ready"),
       correlation_id: correlationId,
     };
@@ -2611,7 +3011,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
     if (riskClassification.blocked) {
       blockedActions.push({
-        action_reference: asOptionalString(action.action ?? action.type ?? action.kind) ?? `proposed_action_${i}`,
+        action_reference: actionReference,
         risk_level: riskClassification.risk_level,
         blocked_reason: riskClassification.blocked_reason ?? "Action requires approval",
         original_action: action,
@@ -2621,9 +3021,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       // Persist an approval request in memory
       const approvalMemory = storeTypedMemoryRecord({
         category: "approval_request",
-        content: `Approval required for ${riskClassification.risk_level} action: ${asOptionalString(action.action ?? action.type ?? action.kind) ?? `action-${i + 1}`}. ${riskClassification.blocked_reason ?? ""}`,
+        content: `Approval required for ${riskClassification.risk_level} action: ${actionReference}. ${riskClassification.blocked_reason ?? ""}`,
         metadata: {
           proposed_action_index: i,
+          action_reference: actionReference,
           risk_level: riskClassification.risk_level,
           blocked_reason: riskClassification.blocked_reason,
           objective,
@@ -2640,18 +3041,31 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         memory_id: approvalMemory.id,
         category: approvalMemory.category,
         action_index: i,
+        action_reference: actionReference,
         risk_level: riskClassification.risk_level,
       });
+      proposalLink.approval_request_memory_id = approvalMemory.id;
+      proposalLink.link_status = "approval_requested";
 
       // Create a capability request for the blocked action if it needs a specific capability
       if (riskClassification.risk_level === "dangerous-global-mutation" && FLEET_CONTROL_PLANE.isConfigured()) {
         try {
           if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "propose")) {
-            await FLEET_CONTROL_PLANE.requestCapability({
+            const capabilityResult = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
               capability: `approval_for_${riskClassification.risk_level}_action`,
-              justification: `[${correlationId}] Action "${asOptionalString(action.action ?? action.type ?? action.kind) ?? `action-${i + 1}`}" is classified as ${riskClassification.risk_level} and requires explicit human approval: ${riskClassification.blocked_reason ?? "policy requires approval"}`,
+              justification: `[${correlationId}] Action "${actionReference}" is classified as ${riskClassification.risk_level} and requires explicit human approval: ${riskClassification.blocked_reason ?? "policy requires approval"}`,
               requested_by: FLEET_AGENT_NAME,
+            }));
+            const capabilityRequestId = capabilityResult.id ?? capabilityResult.request_id ?? null;
+            filedCapabilityRequests.push({
+              capability: `approval_for_${riskClassification.risk_level}_action`,
+              request_id: capabilityRequestId,
+              status: capabilityResult.status ?? "pending",
+              requested_by: FLEET_AGENT_NAME,
+              source: "blocked_proposal",
+              action_reference: actionReference,
             });
+            proposalLink.capability_request_id = capabilityRequestId;
           }
         } catch (error) {
           cycleErrors.push(`request_capability for blocked action ${i} failed`);
@@ -2665,7 +3079,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         if (/browser|portal|session|gmail|taxnet|matrix|mls|cad|comet/i.test(actionTypeLower)) {
           try {
             if (!shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "propose")) {
-              await FLEET_CONTROL_PLANE.queueLocalTask({
+              const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
                 kind: "browser",
                 payload: {
                   ...action,
@@ -2680,7 +3094,17 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
                 source: FLEET_AGENT_NAME,
                 dedup_key: `${correlationId}:blocked:${i}:${actionTypeLower}`,
                 ttl_seconds: 600,
+              }));
+              const localTaskId = queued.task_id ?? queued.id ?? queued.local_task_id ?? null;
+              queuedLocalTasks.push({
+                task_id: localTaskId,
+                kind: "browser",
+                source: FLEET_AGENT_NAME,
+                status: queued.status ?? queued.state ?? null,
+                reason: "blocked_browser_action",
+                action_reference: actionReference,
               });
+              proposalLink.local_task_id = localTaskId;
             }
           } catch (error) {
             cycleErrors.push(`queue_local_task for blocked action ${i} failed`);
@@ -2689,10 +3113,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         }
       }
     }
+    proposalRecordLinks.push(proposalLink);
   }
 
   // Signal coordination intents
-  const signaledIntents: Array<Record<string, unknown>> = [];
   const coordinationIntentRequests = asArray(args.coordination_intents);
   for (let index = 0; index < coordinationIntentRequests.length; index += 1) {
     const intentReq = asRecord(coordinationIntentRequests[index]);
@@ -2735,7 +3159,6 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   }
 
   // Queue local tasks
-  const queuedLocalTasks: Array<Record<string, unknown>> = [];
   const localTaskRequests = asArray(args.local_tasks);
   for (let index = 0; index < localTaskRequests.length; index += 1) {
     const taskReq = asRecord(localTaskRequests[index]);
@@ -2786,8 +3209,34 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     }
   }
 
+  // File capability requests derived from workflow traces
+  for (let index = 0; index < workflowDerivedCapabilityGaps.length; index += 1) {
+    const gap = asRecord(workflowDerivedCapabilityGaps[index]);
+    const capability = asOptionalString(gap.capability);
+    if (!capability) continue;
+    try {
+      if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "workflow_trace")) {
+        const result = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
+          capability,
+          justification: `[${correlationId}] Workflow trace blocker requires capability "${capability}" (${asOptionalString(gap.reason) ?? "workflow blocker"}).`,
+          requested_by: FLEET_AGENT_NAME,
+        }));
+        filedCapabilityRequests.push({
+          capability,
+          request_id: result.id ?? result.request_id ?? null,
+          status: result.status ?? "pending",
+          requested_by: FLEET_AGENT_NAME,
+          source: "workflow_trace",
+          trace_id: asOptionalString(gap.trace_id),
+        });
+      }
+    } catch (error) {
+      cycleErrors.push(`request_capability for workflow trace gap ${index} failed`);
+      queueFleetRetry("request_capability", correlationId, runId, error);
+    }
+  }
+
   // File capability requests
-  const filedCapabilityRequests: Array<Record<string, unknown>> = [];
   const capabilityRequests = asArray(args.capability_requests);
   for (let index = 0; index < capabilityRequests.length; index += 1) {
     const req = asRecord(capabilityRequests[index]);
@@ -2828,9 +3277,12 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     actions: classifiedActions,
     blocked_actions: blockedActions,
     approval_requests: approvalRequestRecords,
+    proposal_records: proposalRecordLinks,
     coordination_intents: signaledIntents,
     local_tasks: queuedLocalTasks,
     capability_requests: filedCapabilityRequests,
+    unknown_signals: unknownSignals,
+    workflow_capability_gaps: workflowDerivedCapabilityGaps,
     correlation_id: correlationId,
     generated_at: observedAt,
   };
@@ -2972,7 +3424,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     learning_records: learningMemoryRecords,
     decision_records: decisionMemoryRecords,
     motto_skills_bridges: mottoSkillsBridges,
-    validation_evidence: validationEvidenceEntries(args as unknown as Record<string, unknown>),
+    validation_evidence: validationEvidenceEntries(args.validation_evidence),
     correlation_id: correlationId,
     generated_at: observedAt,
   };
@@ -3090,7 +3542,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       source: asOptionalString(asRecord(obs).source) ?? "unknown",
       type: asOptionalString(asRecord(obs).type) ?? "observation",
       summary: asOptionalString(asRecord(obs).summary ?? asRecord(obs).content) ?? "signal observed",
+      fact_vs_assumption: asOptionalString(asRecord(obs).fact_vs_assumption) ?? "assumption",
     })),
+    unknown_signals: unknownSignals,
     active_projects: recalledMemories
       .filter((m) => m.category === "project")
       .map((m) => ({
@@ -3102,14 +3556,33 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       .map((m) => ({
         memory_id: m.memory_id,
         summary: asOptionalString(m.content) ?? "active workflow",
-      })),
+      }))
+      .concat(workflowCandidateRecords.map((candidate) => ({
+        memory_id: asOptionalString(candidate.memory_id) ?? null,
+        summary: `Workflow candidate: ${asOptionalString(candidate.workflow_name) ?? "workflow"}`,
+      }))),
     pending_approvals: blockedActions.length + fleetLifecycleState.pendingApprovals,
-    blocked_capabilities: currentBlockedCapabilities(),
+    blocked_capabilities: currentBlockedCapabilities(
+      unknownSignals
+        .map((signal) => asOptionalString(asRecord(signal).signal))
+        .filter((signal): signal is string => Boolean(signal))
+        .concat(
+          capabilityGaps
+            .map((gap) => asOptionalString(asRecord(gap).capability))
+            .filter((capability): capability is string => Boolean(capability)),
+        ),
+    ),
     risks: blockedActions.map((ba) => ({
       action: asOptionalString(asRecord(ba).action_reference) ?? "unknown",
       risk_level: asOptionalString(asRecord(ba).risk_level) ?? "unknown",
       reason: asOptionalString(asRecord(ba).blocked_reason) ?? "requires approval",
-    })),
+    })).concat(
+      unknownSignals.map((signal) => ({
+        action: asOptionalString(asRecord(signal).signal) ?? "unknown_signal",
+        risk_level: "blocked-input",
+        reason: asOptionalString(asRecord(signal).reason) ?? "required signal unavailable",
+      })),
+    ),
     next_steps: planActions.map((pa) => ({
       step: pa.step,
       priority: pa.priority,
