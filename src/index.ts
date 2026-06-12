@@ -3733,7 +3733,7 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     const actionReference = asOptionalString(action.action ?? action.type ?? action.kind) ?? `proposed_action_${i}`;
     let onlineFailure = classifyOnlineFailureType(action, onlineProfile);
     const onlineEvidence = buildOnlineEvidenceRecord(action, onlineProfile, observedAt);
-    if (onlineEvidence.success_claim && !onlineEvidence.evidence_complete) {
+    if (onlineProfile.is_online_workflow && onlineEvidence.success_claim && !onlineEvidence.evidence_complete) {
       onlineFailure = {
         failure_type: "missing_evidence",
         blocker_type: "online_missing_evidence",
