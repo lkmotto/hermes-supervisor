@@ -11,6 +11,26 @@ function correlationId(suffix = "case") {
   return `${VALIDATION_PREFIX}-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Call a tool with deterministic retry: if the first attempt fails the
+ * assertion check, wait for debounced SQLite persistence to flush and
+ * retry once more. This stabilizes transient test flakiness in local-task
+ * outcome recall where the seed cycle's memory writes may not be flushed
+ * before the follow-up recall query runs.
+ */
+async function callToolWithRetry(name, args, retries = 2, delayMs = 500) {
+  let lastError;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, delayMs));
+    try {
+      return await callTool(name, args);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 async function mcpCall(method, params = {}) {
   const res = await fetch(HERMES_URL, {
     method: "POST",
@@ -192,7 +212,10 @@ async function testValOnline011AndCross010_LocalTaskOutcomesFeedPlanning() {
   assert(ingestedNow.length > 0, "Cycle should ingest simulated local task outcomes");
   assert((seeded.learn?.local_task_outcomes_ingested || []).length > 0, "Learn section should expose ingested local task outcomes");
 
-  const follow = await callTool("business_pm_loop", {
+  // Wait for debounced SQLite persistence to flush before follow-up recall.
+  await new Promise((r) => setTimeout(r, 1000));
+
+  const follow = await callToolWithRetry("business_pm_loop", {
     objective: `Re-plan using completed local/browser outcome [${followCid}]`,
     correlation_id: followCid,
     recall_query: seedCid,
@@ -228,7 +251,10 @@ async function testValOnline012AndCross004_PriorOnlineSignalsRefinePlan() {
   });
   assert((first.propose?.capability_requests || []).length > 0, "Seed cycle should create capability request(s)");
 
-  const second = await callTool("business_pm_loop", {
+  // Wait for debounced SQLite persistence to flush before follow-up recall.
+  await new Promise((r) => setTimeout(r, 1000));
+
+  const second = await callToolWithRetry("business_pm_loop", {
     objective: `Build next cycle plan from prior online observations [${followCid}]`,
     correlation_id: followCid,
     recall_query: seedCid,

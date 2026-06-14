@@ -183,16 +183,11 @@ interface FleetFailureRecord {
   error: string;
   queued_at: string;
   status: "pending_retry";
+  failure_surface: "fleet" | "knowledge_store";
 }
 
-interface KnowledgeFailureRecord {
-  operation: string;
-  correlation_id: string;
-  run_id: string | null;
-  error: string;
-  queued_at: string;
-  status: "pending_retry";
-}
+// FleetFailureRecord covers both fleet and knowledge-store retry entries.
+// Maintained as separate queues in state for operational clarity but share the same schema.
 
 interface CoordinationIntentRequest {
   target_agent: string;
@@ -219,8 +214,9 @@ interface CapabilityRequest {
 }
 
 interface SimulateFailuresConfig {
-  fleet_operations?: unknown[];
-  fleet_sections?: unknown[];
+  fleet_operations?: string[];
+  fleet_sections?: string[];
+  knowledge_operations?: string[];
   knowledge_store?: boolean;
 }
 
@@ -252,7 +248,7 @@ const fleetLifecycleState = {
   pendingApprovals: 0,
   blockedCapabilities: [] as string[],
   pendingRetries: [] as FleetFailureRecord[],
-  pendingKnowledgeRetries: [] as KnowledgeFailureRecord[],
+  pendingKnowledgeRetries: [] as FleetFailureRecord[],
   lastError: null as string | null,
 };
 
@@ -538,7 +534,7 @@ function loadOnlineWorkflowAwareness(): OnlineSeededWorkflowAwareness {
   return cachedOnlineWorkflowAwareness;
 }
 
-type BridgeStoreType = "workflow-library" | "decision-log" | "knowledge-distiller";
+type BridgeStoreType = "workflow-library" | "decision-log" | "knowledge-distiller" | "session-postmortem";
 
 interface BridgeResult {
   store_type: BridgeStoreType;
@@ -569,6 +565,8 @@ function bridgeStorePath(storeType: BridgeStoreType, recordId: string): string {
       return `${MOTTO_KNOWLEDGE_DIR}/workflows.json#${recordId}`;
     case "decision-log":
       return `${MOTTO_KNOWLEDGE_DIR}/decisions.jsonl#${recordId}`;
+    case "session-postmortem":
+      return `${MOTTO_KNOWLEDGE_DIR}/postmortems/${recordId}.md`;
     default:
       return `${MOTTO_KNOWLEDGE_DIR}/facts.json#${recordId}`;
   }
@@ -579,6 +577,10 @@ function executeMottoSkillsTool(scriptName: string, command: string, payload: Re
   if (!existsSync(scriptPath)) {
     throw new Error(`motto-skills tool missing: ${scriptPath}`);
   }
+  // NOTE: spawnSync blocks the Node.js event loop for the duration of the
+  // Python subprocess (up to 20-second timeout). Bridge calls must not be
+  // placed on hot paths that require concurrent request handling. Each bridge
+  // call adds N×20s of blocking if fire-and-forget semantics are unsuitable.
   const proc = spawnSync(
     "python3",
     [scriptPath, command, JSON.stringify(redactMetadata(payload))],
@@ -611,7 +613,8 @@ function executeMottoSkillsTool(scriptName: string, command: string, payload: Re
 
 function memoryAlreadyIngestedForTask(taskId: string): boolean {
   const stmt = db.prepare("SELECT id FROM memories WHERE metadata LIKE ? LIMIT 1");
-  stmt.bind([`%\"local_task_id\":\"${taskId}\"%`]);
+  // Escape SQL LIKE wildcards (_ %) in the literal field-name portion of the pattern.
+  stmt.bind([`%\"local\\_task\\_id\":\"${taskId}\"%`]);
   const found = stmt.step();
   stmt.free();
   return found;
@@ -621,7 +624,8 @@ function recentBridgeReferences(limit: number): Array<Record<string, unknown>> {
   const stmt = db.prepare(
     "SELECT id, category, metadata, created_at FROM memories WHERE metadata LIKE ? ORDER BY created_at DESC LIMIT ?",
   );
-  stmt.bind(["%\"bridge_store_type\"%", Math.max(1, Math.trunc(limit))]);
+  // Escape SQL LIKE wildcards (_ %) in the literal field-name portion of the pattern.
+  stmt.bind(["%\"bridge\\_store\\_type\"%", Math.max(1, Math.trunc(limit))]);
   const out: Array<Record<string, unknown>> = [];
   while (stmt.step()) {
     const row = stmt.getAsObject() as Record<string, unknown>;
@@ -649,7 +653,14 @@ function recentBridgeReferences(limit: number): Array<Record<string, unknown>> {
 }
 
 function restoreLearningStateFromMemory() {
+  // Best-effort recovery of learning state from the most recent 50 memory records.
+  // Known limitation: retry queues (pendingRetries, pendingKnowledgeRetries) are NOT
+  // restored from memory on restart — they rely on in-memory arrays that reset to
+  // empty. Retry-queue entries are persisted to capability_gap records for audit
+  // but are not re-hydrated on startup. See persistFleetRetry/persistKnowledgeRetry.
   try {
+    // Scan the most recent records, prioritizing learning-category records for
+    // lastLearnCycle timestamp discovery, then all records as fallback.
     const stmt = db.prepare(
       "SELECT category, metadata, created_at FROM memories ORDER BY created_at DESC LIMIT 50",
     );
@@ -657,7 +668,8 @@ function restoreLearningStateFromMemory() {
     while (stmt.step()) {
       const row = stmt.getAsObject() as Record<string, unknown>;
       const metadata = parseMetadata(row.metadata);
-      if (!fleetLifecycleState.lastLearnCycle) {
+      // Only set lastLearnCycle from learning-category records.
+      if (!fleetLifecycleState.lastLearnCycle && row.category === "learning") {
         const ts = asOptionalString(metadata.timestamp)
           ?? asOptionalString(metadata.observed_at)
           ?? asOptionalString(row.created_at);
@@ -673,6 +685,19 @@ function restoreLearningStateFromMemory() {
     }
     stmt.free();
     fleetLifecycleState.blockedCapabilities = [...blocked];
+    // Fallback: if no learning-category records found in the scan window,
+    // accept any recent record's timestamp as a rough proxy.
+    if (!fleetLifecycleState.lastLearnCycle) {
+      const fallbackStmt = db.prepare(
+        "SELECT created_at FROM memories ORDER BY created_at DESC LIMIT 1",
+      );
+      if (fallbackStmt.step()) {
+        const fbRow = fallbackStmt.getAsObject() as Record<string, unknown>;
+        const ts = asOptionalString(fbRow.created_at);
+        if (ts) fleetLifecycleState.lastLearnCycle = ts;
+      }
+      fallbackStmt.free();
+    }
   } catch {
     // Recovery is best-effort.
   }
@@ -727,6 +752,7 @@ function queueFleetRetry(operation: string, correlationId: string, runId: string
     error: redactSecrets(error instanceof Error ? error.message : String(error)),
     queued_at: nowIso(),
     status: "pending_retry",
+    failure_surface: "fleet",
   };
   fleetLifecycleState.pendingRetries.push(record);
   if (fleetLifecycleState.pendingRetries.length > 25) {
@@ -736,7 +762,7 @@ function queueFleetRetry(operation: string, correlationId: string, runId: string
   persistFleetRetry(record);
 }
 
-function persistKnowledgeRetry(record: KnowledgeFailureRecord) {
+function persistKnowledgeRetry(record: FleetFailureRecord) {
   try {
     storeTypedMemoryRecord({
       category: "capability_gap",
@@ -759,13 +785,14 @@ function persistKnowledgeRetry(record: KnowledgeFailureRecord) {
 }
 
 function queueKnowledgeRetry(operation: string, correlationId: string, runId: string | null, error: unknown) {
-  const record: KnowledgeFailureRecord = {
+  const record: FleetFailureRecord = {
     operation,
     correlation_id: correlationId,
     run_id: runId,
     error: redactSecrets(error instanceof Error ? error.message : String(error)),
     queued_at: nowIso(),
     status: "pending_retry",
+    failure_surface: "knowledge_store",
   };
   fleetLifecycleState.pendingKnowledgeRetries.push(record);
   if (fleetLifecycleState.pendingKnowledgeRetries.length > 25) {
@@ -774,6 +801,27 @@ function queueKnowledgeRetry(operation: string, correlationId: string, runId: st
   fleetLifecycleState.lastError = record.error;
   persistKnowledgeRetry(record);
 }
+
+/**
+ * Drain pending retry queues. Called at the start of a cycle to clear
+ * retries from prior cycles that are no longer actionable. Retry entries
+ * are purely informational after the initial failure — actual re-attempts
+ * of fleet or knowledge-store operations are not automatically retried.
+ * This is a known limitation: retry queues serve as an audit trail rather
+ * than an active reprocessing pipeline.
+ */
+function drainRetryQueues(): void {
+  fleetLifecycleState.pendingRetries = [];
+  fleetLifecycleState.pendingKnowledgeRetries = [];
+}
+
+/**
+ * Known limitation: Fleet intents are consumed only at cycle start via
+ * consumeOpenIntents. Intents that arrive mid-cycle are not re-consumed
+ * until the next cycle invocation. There is no intra-cycle re-polling
+ * mechanism. Callers should batch coordination intents before invoking
+ * the cycle to ensure they are consumed.
+ */
 
 function shouldSimulateOperationFailure(
   simulateConfig: SimulateFailuresConfig | undefined,
@@ -871,6 +919,7 @@ function inferBridgeStoreHint(value: unknown): BridgeStoreType | null {
   if (["workflow", "workflow-library", "workflow_library"].includes(normalized)) return "workflow-library";
   if (["decision", "decision-log", "decision_log"].includes(normalized)) return "decision-log";
   if (["knowledge", "knowledge-distiller", "knowledge_distiller", "fact", "facts"].includes(normalized)) return "knowledge-distiller";
+  if (["postmortem", "session-postmortem", "session_postmortem"].includes(normalized)) return "session-postmortem";
   return null;
 }
 
@@ -927,6 +976,7 @@ function resolveBridgeStore(learning: NormalizedLearning): BridgeStoreType {
   if (learning.bridgeStoreHint) return learning.bridgeStoreHint;
   if (learning.category === "workflow") return "workflow-library";
   if (learning.category === "decision" || learning.category === "approval_request") return "decision-log";
+  if (learning.category === "learning" && learning.bridgeStoreHint === "session-postmortem") return "session-postmortem";
   return "knowledge-distiller";
 }
 
@@ -1774,6 +1824,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   fleetLifecycleState.pendingApprovals = asNonNegativeInt(args.pending_approvals, 0);
   fleetLifecycleState.blockedCapabilities = asStringArray(args.blocked_capabilities);
 
+  // Drain retry queues from prior cycles before starting new work.
+  drainRetryQueues();
+
   await ensureFleetStartupLifecycle();
   if (!FLEET_CONTROL_PLANE.isConfigured()) {
     const message = "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
@@ -2256,7 +2309,7 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       agent_name: FLEET_AGENT_NAME,
       kind: "business_pm_output",
       name: `${correlationId}-business-pm-output.json`,
-      body: JSON.stringify(businessPmOutput, null, 2),
+      body: JSON.stringify(redactMetadata(businessPmOutput), null, 2),
       run_id: runId,
       intent: objective,
       repo: BUILD_INFO.repository,
@@ -2876,10 +2929,13 @@ function classifyOnlineWorkflowStep(
 
 function capabilityGapByBlockerKey(blockerKey: string): { memory_id: string | null; request_id: string | null } | null {
   try {
+    // Use exact JSON substring match rather than LIKE with unescaped wildcards.
+    // LIKE treats _ as single-char wildcard; field names like blocker_key need escaping.
     const stmt = db.prepare(
       "SELECT id, metadata FROM memories WHERE category = 'capability_gap' AND metadata LIKE ? ORDER BY created_at DESC LIMIT 1",
     );
-    stmt.bind([`%\"blocker_key\":\"${blockerKey}\"%`]);
+    // Escape SQL LIKE wildcards (_ %) in the literal pattern portion (not the user-supplied key).
+    stmt.bind([`%\"blocker\\_key\":\"${blockerKey}\"%`]);
     if (!stmt.step()) {
       stmt.free();
       return null;
@@ -3067,6 +3123,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     : undefined;
   fleetLifecycleState.pendingApprovals = asNonNegativeInt(args.pending_approvals, 0);
   fleetLifecycleState.blockedCapabilities = asStringArray(args.blocked_capabilities);
+
+  // Drain retry queues from prior cycles before starting new work.
+  drainRetryQueues();
 
   const cycleErrors: string[] = [];
 
@@ -4989,9 +5048,11 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
   }
 
   const statusReport = {
-    current_focus: focus || fleetLifecycleState.lastLearnCycle
-      ? `Business operations (last learn: ${fleetLifecycleState.lastLearnCycle ?? "never"})`
-      : "No active focus",
+    current_focus: focus
+      ? focus
+      : fleetLifecycleState.lastLearnCycle
+        ? `Business operations (last learn: ${fleetLifecycleState.lastLearnCycle})`
+        : "No active focus",
     observed_signals: recentObservations.map((obs) => ({
       memory_id: obs.memory_id,
       source: asOptionalString(asRecord(obs.metadata).source) ?? "hermes_memory",

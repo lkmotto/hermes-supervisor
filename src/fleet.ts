@@ -172,6 +172,7 @@ export class FleetClient {
     this.endpoint = normalizeBaseUrl(config.baseUrl);
     this.authToken = config.authToken ?? "";
     this.requestTimeoutMs = config.requestTimeoutMs ?? 15000;
+    // Default protocol version kept in sync with src/index.ts MCP_PROTOCOL_VERSION.
     this.protocolVersion = config.protocolVersion ?? "2025-06-18";
     this.clientInfo = config.clientInfo ?? {
       name: "hermes-supervisor",
@@ -279,6 +280,13 @@ export class FleetClient {
     }
   }
 
+  /**
+   * Heuristic session-reset detection based on error message substrings.
+   * Resets the session when the remote MCP server signals a stale/expired session
+   * via HTTP 400/404/409 status codes or "session"/"mcp-session-id" error text.
+   * Note: This heuristic depends on the remote server's error message format and
+   * may need updating if the Fleet MCP server changes its error vocabulary.
+   */
   private shouldResetSession(error: unknown): boolean {
     if (!this.sessionId) return false;
     const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
