@@ -78,7 +78,7 @@ const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
 const FLEET_AGENT_NAME = process.env.HERMES_FLEET_AGENT_NAME?.trim() || "hermes";
 const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "managed";
-const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
+const TELEGRAM_BOT_TOKEN = (process.env.HERMES_TELE_BOT_TOKEN ?? process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
 const MOTTO_SKILLS_TOOLS_DIR = process.env.MOTTO_SKILLS_TOOLS_DIR?.trim() || "/root/motto-skills/tools";
 const MOTTO_KNOWLEDGE_DIR = process.env.MOTTO_KNOWLEDGE_DIR?.trim() || join(homedir(), ".factory", "knowledge");
 const WF1_PROMPT_PATH = "/root/missions/neon-wf1/prompts/wf1_prompt.md";
@@ -5425,7 +5425,7 @@ async function main() {
     telegramBot = new TelegramBot(TELEGRAM_BOT_TOKEN, callbacks);
     telegramBot.start();
   } else {
-    console.error("[telegram] TELEGRAM_BOT_TOKEN not set — bot disabled");
+    console.error("[telegram] HERMES_TELE_BOT_TOKEN not set (and no TELEGRAM_BOT_TOKEN fallback) — bot disabled");
   }
 
   const argv = process.argv.slice(2);

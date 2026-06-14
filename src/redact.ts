@@ -14,6 +14,7 @@ const SECRET_ENV_NAMES = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "TELEGRAM_BOT_TOKEN",
+  "HERMES_TELE_BOT_TOKEN",
 ];
 
 // Common credential formats and labeled secret assignments. These catch

@@ -19,7 +19,7 @@ Required for the full production capability set, listed by key name only:
 - `PERPLEXITY_API_KEY`
 - `MOTTO_MCP_URL`
 - `MOTTO_MCP_AUTH_TOKEN`
-- `TELEGRAM_BOT_TOKEN`
+- `HERMES_TELE_BOT_TOKEN` (primary; `TELEGRAM_BOT_TOKEN` fallback for compatibility)
 
 Common runtime/configuration keys:
 
@@ -34,7 +34,7 @@ Common runtime/configuration keys:
 - `HERMES_BASE_URL`
 - `HERMES_URL`
 
-Secrets are injected from Doppler for production use. `TELEGRAM_BOT_TOKEN` is stored in Doppler and must be a valid BotFather token; do not commit, print, or paste the token value. The current Doppler value is known to return Telegram `401` until replaced with a valid BotFather token.
+Secrets are injected from Doppler for production use. `HERMES_TELE_BOT_TOKEN` is the Hermes-specific BotFather token stored in Doppler (primary); `TELEGRAM_BOT_TOKEN` exists as an optional compatibility fallback for a different bot. Do not commit, print, or paste any token value. A missing `HERMES_TELE_BOT_TOKEN` (or an invalid token) will cause Telegram to return `401` and the bot to be disabled.
 
 ## Common Commands
 

@@ -1,6 +1,6 @@
 // ─── Telegram Bot integration for Hermes ──────────────────────────
 // Uses the Telegram Bot API via native fetch + long polling.
-// The bot token is read from TELEGRAM_BOT_TOKEN at runtime (Doppler-injected).
+// The bot token is read from HERMES_TELE_BOT_TOKEN at runtime (Doppler-injected), with TELEGRAM_BOT_TOKEN as a compatibility fallback.
 // Never logs, prints, or returns the token value.
 // ───────────────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ export class TelegramBot {
 
   constructor(token: string, callbacks: TelegramBotCallbacks) {
     if (!token || token.trim().length === 0) {
-      throw new Error("TELEGRAM_BOT_TOKEN is empty or missing");
+      throw new Error("HERMES_TELE_BOT_TOKEN is empty or missing");
     }
     this.token = token.trim();
     this.callbacks = callbacks;
