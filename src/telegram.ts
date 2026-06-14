@@ -104,8 +104,15 @@ export class TelegramBot {
         }
       } catch (err) {
         const msg = err instanceof Error ? redactSecrets(err.message) : String(err);
+        // 401/403 are permanent auth errors — stop the bot, don't spam retries.
+        const isFatal = msg.includes("401") || msg.includes("403");
+        if (isFatal) {
+          console.error("[telegram] Fatal auth error (token invalid or revoked) — stopping bot:", msg);
+          this.stop();
+          return;
+        }
         console.error("[telegram] Poll error:", msg);
-        // Back off briefly before retry.
+        // Back off briefly before retry for transient errors.
         await sleep(5000);
       }
     }
