@@ -13,6 +13,7 @@ const SECRET_ENV_NAMES = [
   "GITHUB_TOKEN",
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
+  "TELEGRAM_BOT_TOKEN",
 ];
 
 // Common credential formats and labeled secret assignments. These catch

@@ -53,11 +53,17 @@ export class TelegramBot {
 
   private async api(method: string, body: Record<string, unknown>): Promise<unknown> {
     const url = `${TELEGRAM_API_BASE}/bot${this.token}/${method}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Telegram API fetch error: ${redactSecrets(msg)}`);
+    }
     if (!res.ok) {
       const errText = await res.text();
       throw new Error(`Telegram API ${res.status}: ${redactSecrets(errText)}`);
