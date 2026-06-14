@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { RISK_METADATA, evaluateToolPolicy, type RiskMetadata } from "./policy.js";
 import { redactSecrets, redactMetadata } from "./redact.js";
 import { FleetClient } from "./fleet.js";
+import { TelegramBot, type TelegramBotCallbacks } from "./telegram.js";
 
 // ─── Version + build provenance (sourced from package/build metadata) ──
 
@@ -77,6 +78,7 @@ const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
 const FLEET_AGENT_NAME = process.env.HERMES_FLEET_AGENT_NAME?.trim() || "hermes";
 const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "managed";
+const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
 const MOTTO_SKILLS_TOOLS_DIR = process.env.MOTTO_SKILLS_TOOLS_DIR?.trim() || "/root/motto-skills/tools";
 const MOTTO_KNOWLEDGE_DIR = process.env.MOTTO_KNOWLEDGE_DIR?.trim() || join(homedir(), ".factory", "knowledge");
 const WF1_PROMPT_PATH = "/root/missions/neon-wf1/prompts/wf1_prompt.md";
@@ -4898,6 +4900,138 @@ async function dispatchTool(name: string, rawArgs: unknown): Promise<ToolResult>
   }
 }
 
+// ─── Telegram integration handlers ────────────────────────────────
+
+async function handleTelegramStatus(): Promise<string> {
+  try {
+    const report = await handleBusinessStatusReport({ correlation_id: `telegram-status-${Date.now()}` });
+    const data = typeof report === "string" ? JSON.parse(report) : report;
+    const body = data?.content?.[0]?.text
+      ? JSON.parse(data.content[0].text)
+      : data;
+
+    const lines: string[] = [];
+    lines.push("*Hermes Status Report*");
+    lines.push("");
+
+    if (body.status_report) {
+      const sr = body.status_report;
+      if (sr.current_focus) lines.push(`🎯 *Focus:* ${sr.current_focus}`);
+      if (typeof sr.pending_approvals === "number") lines.push(`⏳ *Pending Approvals:* ${sr.pending_approvals}`);
+      if (Array.isArray(sr.blocked_capabilities) && sr.blocked_capabilities.length > 0) {
+        lines.push(`🚫 *Blocked Capabilities:* ${sr.blocked_capabilities.join(", ")}`);
+      } else {
+        lines.push("🚫 *Blocked Capabilities:* none");
+      }
+      if (Array.isArray(sr.active_projects) && sr.active_projects.length > 0) {
+        lines.push(`📂 *Active Projects:* ${sr.active_projects.join(", ")}`);
+      } else if (Array.isArray(sr.projects) && sr.projects.length > 0) {
+        lines.push(`📂 *Projects:* ${sr.projects.join(", ")}`);
+      }
+      if (sr.risks) {
+        if (Array.isArray(sr.risks) && sr.risks.length > 0) {
+          lines.push(`⚠️ *Risks:* ${sr.risks.join(", ")}`);
+        } else if (typeof sr.risks === "string") {
+          lines.push(`⚠️ *Risks:* ${sr.risks}`);
+        }
+      }
+      if (Array.isArray(sr.next_steps) && sr.next_steps.length > 0) {
+        lines.push(`📋 *Next Steps:* ${sr.next_steps.slice(0, 5).join("; ")}`);
+      }
+    } else if (body.focus || body.current_focus) {
+      lines.push(`🎯 *Focus:* ${body.focus || body.current_focus}`);
+      if (body.pending_approvals != null) lines.push(`⏳ *Pending Approvals:* ${body.pending_approvals}`);
+      if (body.blocked_capabilities) lines.push(`🚫 *Blocked Capabilities:* ${Array.isArray(body.blocked_capabilities) ? body.blocked_capabilities.join(", ") : body.blocked_capabilities}`);
+    } else {
+      lines.push(JSON.stringify(body, null, 2).slice(0, 3000));
+    }
+
+    return lines.join("\n");
+  } catch (err) {
+    const msg = err instanceof Error ? redactSecrets(err.message) : String(err);
+    return `⚠️ Error generating status: ${msg}`;
+  }
+}
+
+async function handleTelegramCycle(): Promise<string> {
+  try {
+    const result = await handleBusinessPmLoop({
+      objective: "Telegram-triggered business review cycle",
+      correlation_id: `telegram-cycle-${Date.now()}`,
+      recall_categories: ["decision", "workflow", "fact", "project", "observation", "learning", "capability_gap"],
+      recall_limit: 15,
+    });
+    const data = typeof result === "string" ? JSON.parse(result) : result;
+    const body = data?.content?.[0]?.text
+      ? JSON.parse(data.content[0].text)
+      : data;
+
+    const lines: string[] = [];
+    lines.push("*Business PM Cycle Complete*");
+    lines.push("");
+
+    if (body.status_report) {
+      const sr = body.status_report;
+      lines.push(`🎯 *Focus:* ${sr.current_focus || "N/A"}`);
+      if (typeof sr.pending_approvals === "number") lines.push(`⏳ *Pending Approvals:* ${sr.pending_approvals}`);
+      if (Array.isArray(sr.blocked_capabilities) && sr.blocked_capabilities.length > 0) {
+        lines.push(`🚫 *Blocked:* ${sr.blocked_capabilities.join(", ")}`);
+      }
+      if (Array.isArray(sr.next_steps) && sr.next_steps.length > 0) {
+        lines.push(`📋 *Next Steps:* ${sr.next_steps.slice(0, 5).join("; ")}`);
+      }
+    }
+
+    if (body.plan && !body.status_report) {
+      if (typeof body.plan.focus === "string") lines.push(`🎯 *Focus:* ${body.plan.focus}`);
+      if (Array.isArray(body.plan.actions) && body.plan.actions.length > 0) {
+        const actionSummary = body.plan.actions.slice(0, 5)
+          .map((a: Record<string, unknown>) => `• ${a.action || a.description || "unnamed"} [${a.status || "pending"}]`)
+          .join("\n");
+        lines.push(`📋 *Actions:*\n${actionSummary}`);
+      }
+    }
+
+    if (body.propose) {
+      const proposals = Array.isArray(body.propose) ? body.propose : (body.propose.actions || []);
+      if (proposals.length > 0) {
+        const risky = proposals.filter((p: Record<string, unknown>) =>
+          p.status === "blocked" || p.approval_required === true
+        );
+        if (risky.length > 0) {
+          lines.push(`⚠️ *${risky.length} action(s) require approval*`);
+        }
+      }
+    }
+
+    if (lines.length <= 3) {
+      lines.push(JSON.stringify(body, null, 2).slice(0, 3000));
+    }
+
+    return lines.join("\n");
+  } catch (err) {
+    const msg = err instanceof Error ? redactSecrets(err.message) : String(err);
+    return `⚠️ Error running cycle: ${msg}`;
+  }
+}
+
+async function handleTelegramText(chatId: number, userId: number, text: string): Promise<void> {
+  storeTypedMemoryRecord({
+    category: "observation",
+    content: text,
+    metadata: {
+      source: "telegram",
+      chat_id: chatId,
+      user_id: userId,
+    },
+    trace: {
+      source: "telegram",
+      confidence: "medium",
+      correlationId: `telegram-obs-${Date.now()}`,
+    },
+  });
+}
+
 // ─── Server ────────────────────────────────────────────────────────
 
 const server = new Server(
@@ -4918,6 +5052,20 @@ async function main() {
   await initDb();
   restoreLearningStateFromMemory();
   await ensureFleetStartupLifecycle();
+
+  // ─── Telegram bot startup ──────────────────────────────────
+  let telegramBot: TelegramBot | null = null;
+  if (TELEGRAM_BOT_TOKEN) {
+    const callbacks: TelegramBotCallbacks = {
+      handleStatus: handleTelegramStatus,
+      handleCycle: handleTelegramCycle,
+      handleText: handleTelegramText,
+    };
+    telegramBot = new TelegramBot(TELEGRAM_BOT_TOKEN, callbacks);
+    telegramBot.start();
+  } else {
+    console.error("[telegram] TELEGRAM_BOT_TOKEN not set — bot disabled");
+  }
 
   const argv = process.argv.slice(2);
   const useHttp = argv.includes("--http");
