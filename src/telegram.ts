@@ -13,6 +13,8 @@ export interface TelegramBotCallbacks {
   handleStatus: () => Promise<string>;
   /** Called for /cycle — must trigger a business PM loop and return the status report. */
   handleCycle: () => Promise<string>;
+  /** Called for /perplexity — push Perplexity research context for shadow learning. */
+  handlePerplexityPush: (chatId: number, userId: number, text: string) => Promise<string>;
   /** Called for freeform text messages — stores an observation. */
   handleText: (chatId: number, userId: number, text: string) => Promise<void>;
 }
@@ -138,9 +140,13 @@ export class TelegramBot {
         "👋 Hello! I'm Hermes, your business operations PM agent.\n\n" +
           "Commands:\n" +
           "/status — Current operating state\n" +
-          "/cycle — Run a business PM cycle\n\n" +
+          "/cycle — Run a business PM cycle\n" +
+          "/perplexity <query> | <findings> — Push Perplexity research context for shadow learning\n\n" +
           "You can also send me any text and I'll record it as an observation.",
       );
+    } else if (text.startsWith("/perplexity")) {
+      const resp = await this.callbacks.handlePerplexityPush(chatId, userId, text);
+      await this.sendMessage(chatId, resp);
     } else if (text.startsWith("/status")) {
       const statusText = await this.callbacks.handleStatus();
       await this.sendMessage(chatId, statusText);

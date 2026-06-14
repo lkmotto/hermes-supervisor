@@ -86,6 +86,14 @@ export const RISK_METADATA: Record<string, RiskMetadata> = {
     level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
     scope: "read", summary: "High-level business operations status report summarizing current focus, signals, projects, pending approvals, blocked capabilities, risks, and next steps.",
   },
+  perplexity_ingest: {
+    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "memory", summary: "Ingest Perplexity research context (queries, threads, findings) into Hermes observation memory for shadow learning. Push-based fallback when direct Perplexity activity API is unavailable.",
+  },
+  perplexity_shadow_status: {
+    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "read", summary: "Retrieve recent Perplexity shadow observations from Hermes memory to surface Perplexity-derived awareness.",
+  },
   vps_restart_project: {
     level: "hermes-scoped-mutation", mutating: true, confirmation_required: true, approval_required: true,
     scope: "hermes", summary: "Restarts a Docker project. Hermes-scoped when project=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",

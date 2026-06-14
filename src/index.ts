@@ -1312,6 +1312,23 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "perplexity_ingest",
+    description: "Ingest Perplexity research context (queries, threads, findings) into Hermes observation memory for shadow learning. Push-based fallback when direct Perplexity activity API is unavailable. Allows Hermes to watch and learn from user research activity across Perplexity threads.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        thread_id: { type: "string", description: "Perplexity thread/conversation identifier." },
+        query: { type: "string", description: "The research question or topic queried in Perplexity." },
+        findings: { type: "string", description: "Key findings, answers, or summary from the Perplexity research output." },
+        context: { type: "string", description: "Additional context about the research session or purpose." },
+        source_url: { type: "string", description: "URL to the Perplexity thread or source (if available)." },
+        correlation_id: { type: "string", description: "Optional correlation ID for traceability." },
+        tags: { type: "array", items: { type: "string" }, description: "Optional tags for categorization." },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "business_management_cycle",
     description: "Run a structured business-management cycle that writes fleet run boundaries, heartbeats, events, and artifacts.",
     inputSchema: {
@@ -1502,6 +1519,17 @@ const tools: Tool[] = [
       properties: {
         focus: { type: "string", description: "Current process focus area (defaults to last cycle objective)." },
         correlation_id: { type: "string", description: "Optional validation correlation ID." },
+      },
+    },
+  },
+  {
+    name: "perplexity_shadow_status",
+    description: "Retrieve recent Perplexity shadow observations from Hermes memory. Surfaces what Hermes has learned from Perplexity research activity, including queries, threads, findings, and derived awareness. Read-only diagnostic tool for Perplexity shadow listener.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Maximum recent Perplexity observations to return (default 20).", default: 20 },
+        correlation_id: { type: "string", description: "Optional correlation ID for traceability." },
       },
     },
   },
@@ -3139,6 +3167,41 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     });
   }
 
+  // ── Pull recent Perplexity shadow observations ──
+  const perplexityShadowObservations: Array<Record<string, unknown>> = [];
+  try {
+    const perpStmt = db.prepare(
+      "SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'observation' AND metadata LIKE '%perplexity%' ORDER BY created_at DESC LIMIT 20",
+    );
+    while (perpStmt.step()) {
+      const row = perpStmt.getAsObject() as Record<string, unknown>;
+      const meta = parseMetadata(row.metadata);
+      perplexityShadowObservations.push({
+        memory_id: row.id,
+        signal_type: "perplexity_shadow",
+        source: "perplexity",
+        query: asOptionalString(meta.query) ?? "unknown",
+        thread_id: asOptionalString(meta.thread_id) ?? null,
+        findings_snippet: asOptionalString(meta.findings)?.slice(0, 200) ?? null,
+        context: asOptionalString(meta.context) ?? null,
+        tags: Array.isArray(meta.tags) ? meta.tags : [],
+        ingested_at: row.created_at,
+        correlation_id: correlationId,
+        confidence: "high",
+      });
+    }
+    perpStmt.free();
+  } catch {
+    // Best-effort: shadow pull is non-blocking
+  }
+
+  if (perplexityShadowObservations.length > 0) {
+    console.error(
+      "[perplexity_shadow] Pulled " + String(perplexityShadowObservations.length) +
+      " recent Perplexity observations into perceive phase for correlation_id=" + correlationId,
+    );
+  }
+
   // Consume inbound intents as signals
   const consumedInboundIntents: Array<Record<string, unknown>> = [];
   const consumeIntentsLimit = Math.max(1, asNonNegativeInt(args.consume_intents_limit, 10));
@@ -3319,6 +3382,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const perceiveSection = {
     observations,
     signals: perceivedSignals,
+    perplexity_shadow: {
+      observation_count: perplexityShadowObservations.length,
+      observations: perplexityShadowObservations,
+    },
     observation_records: observationMemoryRecords,
     unknown_signals: unknownSignals,
     workflow_summary: {
@@ -4638,6 +4705,22 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           .map((step) => asOptionalString(step.portal_surface) ?? "portal_generic"),
       ),
     },
+    perplexity_awareness: {
+      shadow_observations_count: perplexityShadowObservations.length,
+      recent_queries: perplexityShadowObservations
+        .filter((obs) => obs.query)
+        .slice(0, 10)
+        .map((obs) => ({
+          query: asOptionalString(asRecord(obs).query)?.slice(0, 200) ?? null,
+          thread_id: asOptionalString(asRecord(obs).thread_id) ?? null,
+          ingested_at: asOptionalString(asRecord(obs).ingested_at) ?? null,
+          has_findings: Boolean(asOptionalString(asRecord(obs).findings_snippet)),
+        })),
+      derived_awareness: perplexityShadowObservations.length > 0
+        ? `Hermes is aware of ${perplexityShadowObservations.length} recent Perplexity research observations, ` +
+          `including ${perplexityShadowObservations.filter((obs) => asOptionalString(asRecord(obs).findings_snippet)).length} with findings.`
+        : "No Perplexity shadow observations available. Use perplexity_ingest to push Perplexity research context.",
+    },
     next_steps: planActions.map((pa) => ({
       step: pa.step,
       priority: pa.priority,
@@ -4725,6 +4808,133 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   };
 }
 
+// ─── Perplexity Shadow handlers ────────────────────────────────────
+
+async function handlePerplexityIngest(args: {
+  thread_id?: string;
+  query: string;
+  findings?: string;
+  context?: string;
+  source_url?: string;
+  correlation_id?: string;
+  tags?: string[];
+}) {
+  const query = redactSecrets((args.query ?? "").trim());
+  if (!query) {
+    return { content: [{ type: "text", text: "Error: query is required" }], isError: true };
+  }
+
+  const correlationId = normalizeCorrelationId(args.correlation_id);
+  const observedAt = nowIso();
+  const threadId = asOptionalString(args.thread_id);
+  const findings = asOptionalString(args.findings);
+  const context = asOptionalString(args.context);
+  const sourceUrl = asOptionalString(args.source_url);
+  const tags = asStringArray(args.tags);
+
+  const contentParts: string[] = [];
+  contentParts.push(`Perplexity Query: ${query}`);
+  if (threadId) contentParts.push(`Thread: ${threadId}`);
+  if (findings) contentParts.push(`Findings: ${findings}`);
+  if (context) contentParts.push(`Context: ${context}`);
+  if (tags.length > 0) contentParts.push(`Tags: ${tags.join(", ")}`);
+
+  const record = storeTypedMemoryRecord({
+    category: "observation",
+    content: contentParts.join(" | "),
+    metadata: {
+      source: "perplexity",
+      source_type: "perplexity_research",
+      query,
+      thread_id: threadId ?? null,
+      findings: findings ?? null,
+      context: context ?? null,
+      source_url: sourceUrl ?? null,
+      tags,
+      ingested_at: observedAt,
+    },
+    trace: {
+      source: "perplexity",
+      correlationId,
+      timestamp: observedAt,
+      confidence: findings ? "high" : "medium",
+    },
+  });
+
+  console.error(
+    "[perplexity_shadow] Ingested query into memory_id=" + record.id +
+    " correlation_id=" + correlationId +
+    " query_len=" + String(query.length),
+  );
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        status: "ingested",
+        memory_id: record.id,
+        category: record.category,
+        query,
+        thread_id: threadId,
+        correlation_id: correlationId,
+        ingested_at: observedAt,
+      }, null, 2),
+    }],
+  };
+}
+
+async function handlePerplexityShadowStatus(args: {
+  limit?: number;
+  correlation_id?: string;
+}) {
+  const limit = Math.max(1, Math.min(100, asNonNegativeInt(args.limit, 20)));
+  const correlationId = normalizeCorrelationId(args.correlation_id);
+  const observedAt = nowIso();
+
+  const perplexityRecords: Array<Record<string, unknown>> = [];
+  try {
+    const stmt = db.prepare(
+      "SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'observation' AND metadata LIKE '%perplexity%' ORDER BY created_at DESC LIMIT ?",
+    );
+    stmt.bind([limit]);
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      const meta = parseMetadata(row.metadata);
+      perplexityRecords.push({
+        memory_id: row.id,
+        query: asOptionalString(meta.query) ?? "unknown",
+        thread_id: asOptionalString(meta.thread_id) ?? null,
+        findings_snippet: asOptionalString(meta.findings)?.slice(0, 300) ?? null,
+        context: asOptionalString(meta.context) ?? null,
+        source_url: asOptionalString(meta.source_url) ?? null,
+        tags: Array.isArray(meta.tags) ? meta.tags : [],
+        ingested_at: row.created_at,
+        content: asOptionalString(row.content)?.slice(0, 500) ?? null,
+      });
+    }
+    stmt.free();
+  } catch {
+    // Best-effort
+  }
+
+  const summary = perplexityRecords.length > 0
+    ? `${perplexityRecords.length} Perplexity shadow observations available (${perplexityRecords.filter((r) => r.findings_snippet).length} with findings).`
+    : "No Perplexity shadow observations found yet. Use perplexity_ingest to push Perplexity research context.";
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        summary,
+        observation_count: perplexityRecords.length,
+        observations: perplexityRecords,
+        correlation_id: correlationId,
+        generated_at: observedAt,
+      }, null, 2),
+    }],
+  };
+}
+
 // ─── Business Status Report handler ────────────────────────────────
 
 async function handleBusinessStatusReport(args: { focus?: string; correlation_id?: string }) {
@@ -4804,6 +5014,33 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
       summary: asOptionalString(a.content) ?? "approval pending",
     })),
     blocked_capabilities: currentBlockedCapabilities(),
+    perplexity_awareness: (() => {
+      const perpRecords: Array<Record<string, unknown>> = [];
+      try {
+        const perpStmt = db.prepare(
+          "SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'observation' AND metadata LIKE '%perplexity%' ORDER BY created_at DESC LIMIT 5",
+        );
+        while (perpStmt.step()) {
+          const row = perpStmt.getAsObject() as Record<string, unknown>;
+          const meta = parseMetadata(row.metadata);
+          perpRecords.push({
+            memory_id: row.id,
+            query: asOptionalString(meta.query) ?? "unknown",
+            thread_id: asOptionalString(meta.thread_id) ?? null,
+            ingested_at: row.created_at,
+            has_findings: Boolean(asOptionalString(meta.findings)),
+          });
+        }
+        perpStmt.free();
+      } catch { /* best-effort */ }
+      return {
+        observation_count: perpRecords.length,
+        recent_queries: perpRecords,
+        summary: perpRecords.length > 0
+          ? `${perpRecords.length} recent Perplexity shadow observation(s) available.`
+          : "No Perplexity shadow observations. Use perplexity_ingest to push research context.",
+      };
+    })(),
     risks: pendingApprovals.map((a) => ({
       risk_level: asOptionalString(asRecord(a.metadata).risk_level) ?? "unknown",
       description: asOptionalString(a.content) ?? "risk identified",
@@ -4837,6 +5074,8 @@ const HANDLERS: Record<string, (a: any) => Promise<ToolResult>> = {
   fleet_get_run_details: handleFleetGetRunDetails,
   business_pm_loop: handleBusinessPmLoop,
   business_status_report: handleBusinessStatusReport,
+  perplexity_ingest: handlePerplexityIngest,
+  perplexity_shadow_status: handlePerplexityShadowStatus,
 };
 
 function redactResult(result: ToolResult): ToolResult {
@@ -4938,6 +5177,9 @@ async function handleTelegramStatus(): Promise<string> {
       if (Array.isArray(sr.next_steps) && sr.next_steps.length > 0) {
         lines.push(`📋 *Next Steps:* ${sr.next_steps.slice(0, 5).join("; ")}`);
       }
+      if (sr.perplexity_awareness && typeof sr.perplexity_awareness.summary === "string") {
+        lines.push(`🔍 *Perplexity:* ${sr.perplexity_awareness.summary}`);
+      }
     } else if (body.focus || body.current_focus) {
       lines.push(`🎯 *Focus:* ${body.focus || body.current_focus}`);
       if (body.pending_approvals != null) lines.push(`⏳ *Pending Approvals:* ${body.pending_approvals}`);
@@ -4980,6 +5222,10 @@ async function handleTelegramCycle(): Promise<string> {
       if (Array.isArray(sr.next_steps) && sr.next_steps.length > 0) {
         lines.push(`📋 *Next Steps:* ${sr.next_steps.slice(0, 5).join("; ")}`);
       }
+      // Surface Perplexity awareness from status report
+      if (sr.perplexity_awareness && typeof sr.perplexity_awareness.summary === "string") {
+        lines.push(`🔍 *Perplexity:* ${sr.perplexity_awareness.summary}`);
+      }
     }
 
     if (body.plan && !body.status_report) {
@@ -5013,6 +5259,59 @@ async function handleTelegramCycle(): Promise<string> {
     const msg = err instanceof Error ? redactSecrets(err.message) : String(err);
     return `⚠️ Error running cycle: ${msg}`;
   }
+}
+
+async function handleTelegramPerplexityPush(chatId: number, userId: number, text: string): Promise<string> {
+  // Remove the command prefix
+  const content = text.replace(/^\/perplexity\s*/i, "").trim();
+  if (!content) {
+    return "ℹ️ Usage: /perplexity <query> | <findings>\n\nPush Perplexity research context to Hermes for shadow learning. Separate query and findings with | (pipe).\n\nExample:\n/perplexity What are appraisal trends in Texas? | Texas appraisal values rising 5-10% YoY in major metros";
+  }
+
+  // Parse query and findings (separated by |)
+  const parts = content.split("|").map((p) => p.trim());
+  const query = parts[0] || content;
+  const findings = parts.length > 1 ? parts.slice(1).join(" | ") : null;
+
+  // Create a correlation ID
+  const correlationId = `telegram-perplexity-${Date.now()}-${chatId}`;
+  const observedAt = nowIso();
+
+  const contentParts: string[] = [];
+  contentParts.push(`Perplexity Query (via Telegram): ${query}`);
+  if (findings) contentParts.push(`Findings: ${findings}`);
+  contentParts.push(`Source: telegram_chat_${chatId}`);
+
+  const record = storeTypedMemoryRecord({
+    category: "observation",
+    content: contentParts.join(" | "),
+    metadata: {
+      source: "perplexity",
+      source_type: "perplexity_research",
+      source_channel: "telegram",
+      chat_id: chatId,
+      user_id: userId,
+      query,
+      findings: findings ?? null,
+      ingested_at: observedAt,
+    },
+    trace: {
+      source: "perplexity",
+      correlationId,
+      timestamp: observedAt,
+      confidence: findings ? "high" : "medium",
+    },
+  });
+
+  console.error(
+    "[perplexity_shadow] Ingested via Telegram into memory_id=" + record.id +
+    " chat_id=" + String(chatId) +
+    " query_len=" + String(query.length),
+  );
+
+  return findings
+    ? `✅ Research context ingested.\n\n📋 *Query:* ${query.slice(0, 300)}\n📝 *Findings:* ${findings.slice(0, 300)}\n🆔 *ID:* ${record.id}\n\nI'll factor this into my next business PM cycle.`
+    : `✅ Research query recorded.\n\n📋 *Query:* ${query.slice(0, 300)}\n🆔 *ID:* ${record.id}\n\nI'll factor this into my next business PM cycle. Add findings with: /perplexity ${query.slice(0, 100)} | <your findings>`;
 }
 
 async function handleTelegramText(chatId: number, userId: number, text: string): Promise<void> {
@@ -5059,6 +5358,7 @@ async function main() {
     const callbacks: TelegramBotCallbacks = {
       handleStatus: handleTelegramStatus,
       handleCycle: handleTelegramCycle,
+      handlePerplexityPush: handleTelegramPerplexityPush,
       handleText: handleTelegramText,
     };
     telegramBot = new TelegramBot(TELEGRAM_BOT_TOKEN, callbacks);
