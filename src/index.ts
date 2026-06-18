@@ -5600,15 +5600,40 @@ async function main() {
         return;
       }
 
-      // Dashboard
-      if (req.method === "GET" && (req.url === "/" || req.url === "/dashboard")) {
+      // Dashboard with tabs: Status, Memory, Tools, Connections
+      if (req.method === "GET" && (req.url === "/" || req.url === "/dashboard" || req.url?.startsWith("/dashboard?"))) {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+        const tab = url.searchParams.get("tab") ?? "status";
+        const memorySearch = url.searchParams.get("q") ?? "";
+        const memoryCategory = url.searchParams.get("cat") ?? "";
+
         let memoryCount = 0;
+        let memoryRows: Array<{ id: string; category: string; content: string; created_at: string }> = [];
         try {
           const stmt = db.prepare("SELECT COUNT(*) as cnt FROM memories");
           if (stmt.step()) memoryCount = (stmt.getAsObject() as Record<string, unknown>).cnt as number;
           stmt.free();
+
+          if (memorySearch || memoryCategory) {
+            let sql = "SELECT id, category, content, created_at FROM memories";
+            const params: string[] = [];
+            if (memorySearch && memoryCategory) { sql += " WHERE category = ? AND content LIKE ?"; params.push(memoryCategory, `%${memorySearch}%`); }
+            else if (memoryCategory) { sql += " WHERE category = ?"; params.push(memoryCategory); }
+            else { sql += " WHERE content LIKE ?"; params.push(`%${memorySearch}%`); }
+            sql += " ORDER BY created_at DESC LIMIT 50";
+            const stmt2 = db.prepare(sql);
+            stmt2.bind(params);
+            while (stmt2.step()) {
+              const row = stmt2.getAsObject() as Record<string, unknown>;
+              memoryRows.push({ id: row.id as string, category: row.category as string, content: (row.content as string).slice(0, 200), created_at: row.created_at as string });
+            }
+            stmt2.free();
+          }
         } catch { /* best-effort */ }
-        const toolList = publicTools.map((t) => t.name).sort();
+
+        const toolList = publicTools.map((t) => ({ name: t.name, description: t.description ?? "" })).sort((a, b) => a.name.localeCompare(b.name));
+        const categories = ["status", "memory", "tools", "connections"];
+
         const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5616,47 +5641,160 @@ async function main() {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hermes Dashboard</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 24px; }
-h1 { color: #58a6ff; font-size: 24px; margin-bottom: 4px; }
-.sub { color: #8b949e; font-size: 13px; margin-bottom: 24px; }
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-.card h2 { color: #f0f6fc; font-size: 15px; margin-bottom: 10px; }
-.stat { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border-bottom: 1px solid #21262d; }
-.stat:last-child { border-bottom: none; }
-.stat .label { color: #8b949e; }
-.stat .value { color: #c9d1d9; font-family: monospace; }
-.status-ok { color: #3fb950; }
-.status-warn { color: #d29922; }
-.tool-tag { display: inline-block; background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; border-radius: 4px; padding: 2px 8px; margin: 2px; font-size: 12px; font-family: monospace; }
-.endpoints { font-size: 12px; color: #8b949e; margin-top: 8px; }
-.endpoints code { background: #21262d; padding: 1px 5px; border-radius: 3px; color: #c9d1d9; }
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#c9d1d9;padding:24px;max-width:1100px;margin:0 auto}
+h1{color:#58a6ff;font-size:22px;margin-bottom:2px}
+.sub{color:#8b949e;font-size:12px;margin-bottom:18px}
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid #30363d;padding-bottom:0}
+.tab{padding:8px 16px;font-size:13px;color:#8b949e;text-decoration:none;border-radius:6px 6px 0 0;transition:all .15s}
+.tab:hover{color:#c9d1d9;background:#161b22}
+.tab.active{color:#f0f6fc;background:#161b22;border:1px solid #30363d;border-bottom-color:#161b22;margin-bottom:-1px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}
+.card h2{color:#f0f6fc;font-size:15px;margin-bottom:10px}
+.stat{display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-bottom:1px solid #21262d}
+.stat:last-child{border-bottom:none}
+.stat .label{color:#8b949e}
+.stat .value{color:#c9d1d9;font-family:monospace;font-size:12px}
+.badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600}
+.badge-ok{background:#23863622;color:#3fb950;border:1px solid #23863644}
+.tool-row{display:flex;justify-content:space-between;align-items:flex-start;padding:6px 0;border-bottom:1px solid #21262d;font-size:13px}
+.tool-row:last-child{border-bottom:none}
+.tool-name{color:#58a6ff;font-family:monospace;font-size:12px;white-space:nowrap;margin-right:12px}
+.tool-desc{color:#8b949e;font-size:12px;flex:1}
+.search-box{width:100%;padding:8px 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;margin-bottom:10px}
+.search-box:focus{outline:none;border-color:#58a6ff}
+.mem-item{padding:8px 0;border-bottom:1px solid #21262d;font-size:12px}
+.mem-item:last-child{border-bottom:none}
+.mem-cat{color:#d29922;font-size:11px;margin-right:8px}
+.mem-time{color:#8b949e;font-size:11px}
+.mem-text{color:#c9d1d9;margin-top:2px;line-height:1.4}
+.endpoints{font-size:12px;color:#8b949e;margin-top:8px}
+.endpoints code{background:#21262d;padding:1px 5px;border-radius:3px;color:#c9d1d9;font-size:11px}
+.conn-row{display:flex;align-items:center;padding:8px 0;border-bottom:1px solid #21262d;font-size:13px}
+.conn-row:last-child{border-bottom:none}
+.conn-dot{width:8px;height:8px;border-radius:50%;margin-right:10px;flex-shrink:0}
+.conn-dot-up{background:#3fb950}
+.conn-dot-down{background:#f85149}
+.conn-name{color:#58a6ff;font-family:monospace;font-size:12px;margin-right:12px;min-width:120px}
+.conn-detail{color:#8b949e;font-size:12px}
+form{display:inline}
+select{padding:4px 8px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;margin-right:8px}
+.mem-header{display:flex;gap:10px;margin-bottom:10px;align-items:center}
 </style>
 </head>
 <body>
 <h1>Hermes Supervisor</h1>
-<div class="sub">commit ${BUILD_INFO.commit.slice(0, 7)} &middot; ${BUILD_INFO.builtAt.replace("T", " ").slice(0, 19)} &middot; ${BUILD_INFO.ref}</div>
+<div class="sub">commit ${BUILD_INFO.commit.slice(0, 7)} &middot; v${VERSION} &middot; ${BUILD_INFO.ref} &middot; built ${BUILD_INFO.builtAt.replace("T", " ").slice(0, 16)}</div>
 
-<div class="card">
-  <h2>Status</h2>
-  <div class="stat"><span class="label">Version</span><span class="value">${VERSION}</span></div>
-  <div class="stat"><span class="label">Memory Records</span><span class="value">${memoryCount}</span></div>
-  <div class="stat"><span class="label">Tools Available</span><span class="value">${toolList.length}</span></div>
+<div class="tabs">
+${categories.map((c) => `<a class="tab${tab === c ? ' active' : ''}" href="/dashboard?tab=${c}">${c.charAt(0).toUpperCase() + c.slice(1)}</a>`).join("")}
 </div>
 
+${tab === "status" ? `
+<div class="card">
+  <h2>Runtime</h2>
+  <div class="stat"><span class="label">Version</span><span class="value">${VERSION}</span></div>
+  <div class="stat"><span class="label">Commit</span><span class="value">${BUILD_INFO.commit.slice(0, 12)}</span></div>
+  <div class="stat"><span class="label">Repository</span><span class="value">${BUILD_INFO.repository}</span></div>
+  <div class="stat"><span class="label">Built</span><span class="value">${BUILD_INFO.builtAt.replace("T", " ").slice(0, 19)}</span></div>
+  <div class="stat"><span class="label">Protocol</span><span class="value">${MCP_PROTOCOL_VERSION}</span></div>
+</div>
+<div class="card">
+  <h2>Data</h2>
+  <div class="stat"><span class="label">Memory Records</span><span class="value">${memoryCount}</span></div>
+  <div class="stat"><span class="label">MCP Tools</span><span class="value">${toolList.length}</span></div>
+  <div class="stat"><span class="label">Database Path</span><span class="value">${DB_PATH}</span></div>
+  <div class="stat"><span class="label">VPS ID</span><span class="value">${VPS_ID}</span></div>
+</div>
+` : ""}
+
+${tab === "memory" ? `
+<div class="card">
+  <h2>Memory Browser</h2>
+  <div class="mem-header">
+    <form method="get" action="/dashboard">
+      <input type="hidden" name="tab" value="memory">
+      <input class="search-box" type="text" name="q" value="${memorySearch.replace(/"/g, '&quot;')}" placeholder="Search memory..." style="width:300px">
+      <select name="cat">
+        <option value="">All categories</option>
+        <option value="decision"${memoryCategory==='decision'?' selected':''}>decision</option>
+        <option value="fact"${memoryCategory==='fact'?' selected':''}>fact</option>
+        <option value="project"${memoryCategory==='project'?' selected':''}>project</option>
+        <option value="learning"${memoryCategory==='learning'?' selected':''}>learning</option>
+        <option value="plan"${memoryCategory==='plan'?' selected':''}>plan</option>
+        <option value="session_summary"${memoryCategory==='session_summary'?' selected':''}>session_summary</option>
+      </select>
+      <button style="padding:6px 14px;background:#238636;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px">Search</button>
+    </form>
+  </div>
+  ${memoryRows.length === 0 ? '<div style="color:#8b949e;font-size:13px;padding:10px 0">${memorySearch || memoryCategory ? "No matching records found." : "Use the search above to browse memory."}</div>' : ""}
+  ${memoryRows.map((m) => `
+  <div class="mem-item">
+    <span class="mem-cat">[${m.category}]</span>
+    <span class="mem-time">${(m.created_at ?? "").replace("T", " ").slice(0, 19)}</span>
+    <div class="mem-text">${m.content.replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 300)}</div>
+  </div>`).join("")}
+  ${memoryRows.length > 0 ? `<div style="color:#8b949e;font-size:11px;margin-top:8px">${memoryRows.length} result${memoryRows.length===1?'':'s'}</div>` : ""}
+</div>
+` : ""}
+
+${tab === "tools" ? `
 <div class="card">
   <h2>MCP Tools (${toolList.length})</h2>
-  ${toolList.map((t) => '<span class="tool-tag">' + t + '</span>').join(' ')}
+  ${toolList.map((t) => `
+  <div class="tool-row">
+    <span class="tool-name">${t.name}</span>
+    <span class="tool-desc">${t.description.slice(0, 120)}</span>
+  </div>`).join("")}
 </div>
+` : ""}
 
+${tab === "connections" ? `
+<div class="card">
+  <h2>MCP Connections</h2>
+  <div class="conn-row">
+    <span class="conn-dot conn-dot-up"></span>
+    <span class="conn-name">Factory / Droid</span>
+    <span class="conn-detail">MCP HTTP client &middot; calls Hermes tools</span>
+  </div>
+  <div class="conn-row">
+    <span class="conn-dot conn-dot-up"></span>
+    <span class="conn-name">Perplexity</span>
+    <span class="conn-detail">MCP HTTP client &middot; calls Hermes tools</span>
+  </div>
+  <div class="conn-row">
+    <span class="conn-dot conn-dot-up"></span>
+    <span class="conn-name">Telegram</span>
+    <span class="conn-detail">Bot presence &middot; commands: /status, /shadow, /auto</span>
+  </div>
+  <div class="conn-row">
+    <span class="conn-dot conn-dot-up"></span>
+    <span class="conn-name">Hostinger API</span>
+    <span class="conn-detail">VPS management &middot; Docker, metrics, snapshots</span>
+  </div>
+  <div class="conn-row">
+    <span class="conn-dot conn-dot-up"></span>
+    <span class="conn-name">Perplexity API</span>
+    <span class="conn-detail">Sonar Pro &middot; research + plan generation</span>
+  </div>
+  <div class="conn-row">
+    <span class="conn-dot conn-dot-up"></span>
+    <span class="conn-name">Factory API</span>
+    <span class="conn-detail">REST &middot; sessions, missions (${FACTORY_API_KEY ? 'configured' : 'not configured'})</span>
+  </div>
+</div>
 <div class="card">
   <h2>Endpoints</h2>
   <div class="endpoints">
     <div>Health: <code>GET /health</code></div>
+    <div>Dashboard: <code>GET /</code></div>
     <div>MCP RPC: <code>POST /</code> (streamable HTTP)</div>
     <div>Perplexity Report: <code>POST /perplexity/report</code></div>
+    ${HERMES_MCP_AUTH_TOKEN ? '<div style="margin-top:6px"><span class="badge badge-ok">MCP Auth enabled</span></div>' : '<div style="margin-top:6px"><span style="color:#d29922">MCP Auth disabled (no token set)</span></div>'}
   </div>
 </div>
+` : ""}
+
 </body>
 </html>`;
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
