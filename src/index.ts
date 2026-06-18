@@ -5600,6 +5600,70 @@ async function main() {
         return;
       }
 
+      // Dashboard
+      if (req.method === "GET" && (req.url === "/" || req.url === "/dashboard")) {
+        let memoryCount = 0;
+        try {
+          const stmt = db.prepare("SELECT COUNT(*) as cnt FROM memories");
+          if (stmt.step()) memoryCount = (stmt.getAsObject() as Record<string, unknown>).cnt as number;
+          stmt.free();
+        } catch { /* best-effort */ }
+        const toolList = publicTools.map((t) => t.name).sort();
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 24px; }
+h1 { color: #58a6ff; font-size: 24px; margin-bottom: 4px; }
+.sub { color: #8b949e; font-size: 13px; margin-bottom: 24px; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.card h2 { color: #f0f6fc; font-size: 15px; margin-bottom: 10px; }
+.stat { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border-bottom: 1px solid #21262d; }
+.stat:last-child { border-bottom: none; }
+.stat .label { color: #8b949e; }
+.stat .value { color: #c9d1d9; font-family: monospace; }
+.status-ok { color: #3fb950; }
+.status-warn { color: #d29922; }
+.tool-tag { display: inline-block; background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; border-radius: 4px; padding: 2px 8px; margin: 2px; font-size: 12px; font-family: monospace; }
+.endpoints { font-size: 12px; color: #8b949e; margin-top: 8px; }
+.endpoints code { background: #21262d; padding: 1px 5px; border-radius: 3px; color: #c9d1d9; }
+</style>
+</head>
+<body>
+<h1>Hermes Supervisor</h1>
+<div class="sub">commit ${BUILD_INFO.commit.slice(0, 7)} &middot; ${BUILD_INFO.builtAt.replace("T", " ").slice(0, 19)} &middot; ${BUILD_INFO.ref}</div>
+
+<div class="card">
+  <h2>Status</h2>
+  <div class="stat"><span class="label">Version</span><span class="value">${VERSION}</span></div>
+  <div class="stat"><span class="label">Memory Records</span><span class="value">${memoryCount}</span></div>
+  <div class="stat"><span class="label">Tools Available</span><span class="value">${toolList.length}</span></div>
+</div>
+
+<div class="card">
+  <h2>MCP Tools (${toolList.length})</h2>
+  ${toolList.map((t) => '<span class="tool-tag">' + t + '</span>').join(' ')}
+</div>
+
+<div class="card">
+  <h2>Endpoints</h2>
+  <div class="endpoints">
+    <div>Health: <code>GET /health</code></div>
+    <div>MCP RPC: <code>POST /</code> (streamable HTTP)</div>
+    <div>Perplexity Report: <code>POST /perplexity/report</code></div>
+  </div>
+</div>
+</body>
+</html>`;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(html);
+        return;
+      }
+
       // GET: SSE stream placeholder (required by MCP spec)
       if (req.method === "GET") {
         res.writeHead(200, {
