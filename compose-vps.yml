@@ -1,0 +1,27 @@
+version: "3.8"
+services:
+  hermes:
+    image: node:24-alpine
+    container_name: hermes
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "apk add --no-cache git curl; git clone --depth 1 https://github.com/lkmotto/hermes-supervisor.git /tmp/src; cp -r /tmp/src/. /app/; rm -rf /tmp/src; npm install; npm run build; mkdir -p /data; exec node dist/index.js --http --host 0.0.0.0 --port 8150"
+    ports:
+      - "8150:8150"
+    environment:
+      - HOSTINGER_API_TOKEN=${HOSTINGER_API_TOKEN}
+      - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_BOT_NAME=${TELEGRAM_BOT_NAME:-Hermes}
+      - HERMES_VPS_ID=1511806
+      - HERMES_DB_PATH=/data/hermes.db
+      - HERMES_TELEGRAM_HEARTBEAT_MINUTES=${HERMES_TELEGRAM_HEARTBEAT_MINUTES:-15}
+      - HERMES_AUTO_CONFIRM_TOKEN=${HERMES_AUTO_CONFIRM_TOKEN}
+      - HERMES_REPORT_TOKEN=${HERMES_REPORT_TOKEN}
+      - HERMES_MCP_AUTH_TOKEN=${HERMES_MCP_AUTH_TOKEN}
+      - FACTORY_API_KEY=${FACTORY_API_KEY}
+    volumes:
+      - hermes_data:/data
+volumes:
+  hermes_data:

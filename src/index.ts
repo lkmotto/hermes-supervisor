@@ -14,6 +14,7 @@ import { RISK_METADATA, evaluateToolPolicy, type RiskMetadata } from "./policy.j
 import { redactSecrets, redactMetadata } from "./redact.js";
 import { FleetClient } from "./fleet.js";
 import { TelegramBot, type TelegramBotCallbacks } from "./telegram.js";
+import { listSessions, getSession, getSessionMessages, createMission } from "./factory-client.js";
 
 // ─── Version + build provenance (sourced from package/build metadata) ──
 
@@ -78,6 +79,8 @@ const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
 const FLEET_AGENT_NAME = process.env.HERMES_FLEET_AGENT_NAME?.trim() || "hermes";
 const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "managed";
+const HERMES_MCP_AUTH_TOKEN = (process.env.HERMES_MCP_AUTH_TOKEN ?? "").trim();
+const FACTORY_API_KEY = (process.env.FACTORY_API_KEY ?? "").trim();
 const TELEGRAM_BOT_TOKEN = (process.env.HERMES_TELE_BOT_TOKEN ?? process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
 const MOTTO_SKILLS_TOOLS_DIR = process.env.MOTTO_SKILLS_TOOLS_DIR?.trim() || "/root/motto-skills/tools";
 const MOTTO_KNOWLEDGE_DIR = process.env.MOTTO_KNOWLEDGE_DIR?.trim() || join(homedir(), ".factory", "knowledge");
@@ -1581,6 +1584,41 @@ const tools: Tool[] = [
         limit: { type: "number", description: "Maximum recent Perplexity observations to return (default 20).", default: 20 },
         correlation_id: { type: "string", description: "Optional correlation ID for traceability." },
       },
+    },
+  },
+  {
+    name: "factory_list_sessions",
+    description: "List recent Factory Droid sessions for cross-session awareness.",
+    inputSchema: {
+      type: "object",
+      properties: { limit: { type: "number", description: "Max sessions (default 10)", default: 10 } },
+    },
+  },
+  {
+    name: "factory_get_session",
+    description: "Get a Factory Droid session by ID, optionally including message history.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Factory session ID" },
+        include_messages: { type: "boolean", description: "Include message history" },
+        message_limit: { type: "number", description: "Max messages (default 50)", default: 50 },
+      },
+      required: ["session_id"],
+    },
+  },
+  {
+    name: "factory_create_mission",
+    description: "Create a new Factory mission from Hermes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Mission title" },
+        description: { type: "string", description: "Mission description and goal" },
+        repository: { type: "string", description: "Git repository URL" },
+        branch: { type: "string", description: "Target branch" },
+      },
+      required: ["title", "description"],
     },
   },
 ];
@@ -4994,6 +5032,52 @@ async function handlePerplexityShadowStatus(args: {
   };
 }
 
+// ─── Factory API handlers ──────────────────────────────────────────
+
+async function handleFactoryListSessions(args: Record<string, unknown>) {
+  const limit = typeof args.limit === "number" ? args.limit : 10;
+  const sessions = await listSessions(Math.min(limit, 50));
+  return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }] };
+}
+
+async function handleFactoryGetSession(args: Record<string, unknown>) {
+  const sessionId = typeof args.session_id === "string" ? args.session_id : "";
+  if (!sessionId) throw new Error("session_id is required");
+  const includeMessages = args.include_messages === true;
+  const messageLimit = typeof args.message_limit === "number" ? args.message_limit : 50;
+  const session = await getSession(sessionId);
+  let messages: unknown[] | undefined;
+  if (includeMessages) {
+    messages = await getSessionMessages(sessionId, Math.min(messageLimit, 100));
+  }
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({ ...session, messages: messages ?? undefined }, null, 2),
+    }],
+  };
+}
+
+async function handleFactoryCreateMission(args: Record<string, unknown>) {
+  const title = typeof args.title === "string" ? args.title : "";
+  const description = typeof args.description === "string" ? args.description : "";
+  if (!title) throw new Error("title is required");
+  if (!description) throw new Error("description is required");
+  const mission = await createMission({
+    title,
+    description,
+    repository: typeof args.repository === "string" ? args.repository : undefined,
+    branch: typeof args.branch === "string" ? args.branch : undefined,
+  });
+  storeTypedMemoryRecord({
+    category: "mission",
+    content: `Created Factory mission: ${title}`,
+    metadata: { mission_id: mission?.id },
+    trace: { source: "factory_api", confidence: "high" },
+  });
+  return { content: [{ type: "text", text: JSON.stringify(mission, null, 2) }] };
+}
+
 // ─── Business Status Report handler ────────────────────────────────
 
 async function handleBusinessStatusReport(args: { focus?: string; correlation_id?: string }) {
@@ -5137,6 +5221,9 @@ const HANDLERS: Record<string, (a: any) => Promise<ToolResult>> = {
   business_status_report: handleBusinessStatusReport,
   perplexity_ingest: handlePerplexityIngest,
   perplexity_shadow_status: handlePerplexityShadowStatus,
+  factory_list_sessions: handleFactoryListSessions,
+  factory_get_session: handleFactoryGetSession,
+  factory_create_mission: handleFactoryCreateMission,
 };
 
 function redactResult(result: ToolResult): ToolResult {
@@ -5462,6 +5549,15 @@ async function main() {
       }
 
       if (req.method === "POST") {
+        if (HERMES_MCP_AUTH_TOKEN) {
+          const auth = req.headers.authorization ?? "";
+          const bearer = typeof auth === "string" ? auth.replace(/^Bearer\s+/i, "") : "";
+          if (bearer !== HERMES_MCP_AUTH_TOKEN) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+            return;
+          }
+        }
         try {
           const chunks: Buffer[] = [];
           for await (const chunk of req) chunks.push(chunk);

@@ -94,6 +94,18 @@ export const RISK_METADATA: Record<string, RiskMetadata> = {
     level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
     scope: "read", summary: "Retrieve recent Perplexity shadow observations from Hermes memory to surface Perplexity-derived awareness.",
   },
+  factory_list_sessions: {
+    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "read", summary: "List recent Factory Droid sessions from the Factory REST API.",
+  },
+  factory_get_session: {
+    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "read", summary: "Get a Factory Droid session by ID with optional message history.",
+  },
+  factory_create_mission: {
+    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "memory", summary: "Creates a new Factory mission. No infrastructure change; stored in Hermes memory.",
+  },
   vps_restart_project: {
     level: "hermes-scoped-mutation", mutating: true, confirmation_required: true, approval_required: true,
     scope: "hermes", summary: "Restarts a Docker project. Hermes-scoped when project=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",
