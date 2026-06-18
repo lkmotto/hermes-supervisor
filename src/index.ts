@@ -5566,6 +5566,16 @@ async function main() {
 
           const result = await handleRpc(rpc);
 
+          if (result === null) {
+            // Notification — no response body per MCP spec.
+            res.writeHead(202, {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+            });
+            res.end();
+            return;
+          }
+
           res.writeHead(200, {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
@@ -5614,9 +5624,18 @@ async function main() {
   }
 }
 
-type RpcRequest = { jsonrpc: string; id: number | string; method: string; params?: Record<string, unknown> };
+type RpcRequest = { jsonrpc: string; id?: number | string | null; method: string; params?: Record<string, unknown> };
 
-async function handleRpc(rpc: RpcRequest) {
+function isNotification(rpc: RpcRequest): boolean {
+  return rpc.id === undefined || rpc.id === null;
+}
+
+async function handleRpc(rpc: RpcRequest): Promise<Record<string, unknown> | null> {
+  // Notifications get no response per MCP spec.
+  if (isNotification(rpc) && rpc.method !== "notifications/initialized") {
+    return null;
+  }
+
   switch (rpc.method) {
     case "initialize":
       return {
@@ -5646,8 +5665,11 @@ async function handleRpc(rpc: RpcRequest) {
       return { jsonrpc: "2.0", id: rpc.id, result };
     }
     case "notifications/initialized":
-      return { jsonrpc: "2.0", id: rpc.id, result: {} };
+      // Notification — no response body, but acknowledge with empty SSE for spec compliance.
+      return null;
     default:
+      // If no id, it's an unrecognized notification — silently ignore.
+      if (isNotification(rpc)) return null;
       return {
         jsonrpc: "2.0",
         id: rpc.id,
