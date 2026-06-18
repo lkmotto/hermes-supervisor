@@ -5,9 +5,22 @@ services:
     container_name: hermes
     restart: unless-stopped
     working_dir: /app
-    command: sh -c "apk add --no-cache git curl; git clone --depth 1 https://github.com/lkmotto/hermes-supervisor.git /tmp/src; cp -r /tmp/src/. /app/; rm -rf /tmp/src; npm install; npm run build; mkdir -p /data; exec node dist/index.js --http --host 0.0.0.0 --port 8150"
+    command: sh -c "
+      apk add --no-cache git curl python3 py3-pip &&
+      pip3 install --break-system-packages 'hermes-agent[web]' &&
+      git clone --depth 1 https://github.com/lkmotto/hermes-supervisor.git /tmp/src &&
+      cp -r /tmp/src/. /app/ &&
+      rm -rf /tmp/src &&
+      npm install &&
+      npm run build &&
+      mkdir -p /data /root/.hermes &&
+      node dist/index.js --http --host 0.0.0.0 --port 8150 &
+      sleep 3 &&
+      hermes dashboard --host 0.0.0.0 --port 9119 --no-open
+    "
     ports:
       - "8150:8150"
+      - "9119:9119"
     environment:
       - HOSTINGER_API_TOKEN=${HOSTINGER_API_TOKEN}
       - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
