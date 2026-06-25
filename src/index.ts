@@ -14,7 +14,21 @@ import { RISK_METADATA, evaluateToolPolicy, type RiskMetadata } from "./policy.j
 import { redactSecrets, redactMetadata } from "./redact.js";
 import { FleetClient } from "./fleet.js";
 import { TelegramBot, type TelegramBotCallbacks } from "./telegram.js";
-import { listSessions, getSession, getSessionMessages, createMission } from "./factory-client.js";
+import {
+  listSessions,
+  getSession,
+  getSessionMessages,
+  createMission,
+  addSessionMessage,
+  listComputers,
+  createSession,
+} from "./factory-client.js";
+import {
+  extractCitationUrls,
+  extractConfidenceScore,
+  latestAssistantMessageSnapshot,
+  normalizeConfidenceThreshold,
+} from "./factory-sync-completion-gate.js";
 
 // ─── Version + build provenance (sourced from package/build metadata) ──
 
@@ -413,6 +427,15 @@ function asStringArray(value: unknown): string[] {
 function asNonNegativeInt(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.max(0, Math.trunc(value));
+}
+
+function asOptionalNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 function asBool(value: unknown, fallback = false): boolean {
@@ -1605,6 +1628,73 @@ const tools: Tool[] = [
         message_limit: { type: "number", description: "Max messages (default 50)", default: 50 },
       },
       required: ["session_id"],
+    },
+  },
+  {
+    name: "factory_sync_sessions",
+    description: "Read synchronized status across multiple Factory Droid sessions, with optional latest message snapshots.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_ids: { type: "array", items: { type: "string" }, description: "Explicit session IDs to inspect. If omitted, Hermes uses recent sessions." },
+        limit: { type: "number", description: "When session_ids is omitted, how many recent sessions to inspect (default 10).", default: 10 },
+        include_messages: { type: "boolean", description: "Include latest messages in response (default false)." },
+        message_limit: { type: "number", description: "Messages to fetch per session when include_messages=true (default 20).", default: 20 },
+        completion_keywords: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional keywords indicating completion in latest assistant output.",
+        },
+        min_confidence: {
+          type: "number",
+          description: "Optional completion confidence threshold (0-1, or 0-100 percent) applied to latest assistant output.",
+        },
+        require_citations: {
+          type: "boolean",
+          description: "When true, completion requires at least one citation URL in latest assistant output.",
+        },
+      },
+    },
+  },
+  {
+    name: "factory_autoloop",
+    description: "Autonomous multi-session sync loop, checks session progress, broadcasts follow-up prompts, and repeats until completion criteria are met.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_ids: { type: "array", items: { type: "string" }, description: "Factory session IDs to orchestrate." },
+        objective: { type: "string", description: "Shared objective all sessions should complete." },
+        desired_effect: { type: "string", description: "Success criteria checked against session outputs." },
+        reprompt_template: {
+          type: "string",
+          description: "Optional custom prompt template. Supports {objective}, {desired_effect}, {round}, {max_rounds}, {session_id}, {status}, {latest_summary}, {min_confidence}, {require_citations}, {completion_gate_reason}.",
+        },
+        max_rounds: { type: "number", description: "Maximum orchestration rounds (default 3, max 12).", default: 3 },
+        poll_delay_ms: { type: "number", description: "Delay between rounds in milliseconds (default 1500).", default: 1500 },
+        include_messages: { type: "boolean", description: "Include session messages in output (default false)." },
+        message_limit: { type: "number", description: "Messages to fetch per session each round (default 20).", default: 20 },
+        completion_keywords: {
+          type: "array",
+          items: { type: "string" },
+          description: "Completion keywords searched in latest assistant output.",
+        },
+        min_confidence: {
+          type: "number",
+          description: "Optional completion confidence threshold (0-1, or 0-100 percent) applied before accepting completion.",
+        },
+        require_citations: {
+          type: "boolean",
+          description: "When true, completion requires at least one citation URL in latest assistant output.",
+        },
+        push_to_perplexity_shadow: {
+          type: "boolean",
+          description: "When true (default), each round is ingested into Perplexity shadow memory for awareness continuity.",
+          default: true,
+        },
+        computer_id: { type: "string", description: "Optional computer ID when posting follow-up messages." },
+        correlation_id: { type: "string", description: "Optional correlation ID for traceability." },
+      },
+      required: ["session_ids", "objective"],
     },
   },
   {
@@ -5065,6 +5155,622 @@ async function handleFactoryGetSession(args: Record<string, unknown>) {
   };
 }
 
+function resolveFactorySessionId(session: Record<string, unknown>): string | null {
+  return asOptionalString(session.sessionId) ?? asOptionalString(session.id);
+}
+
+function buildAutoloopCursor(session: Record<string, unknown>): string {
+  const messageId = asOptionalString(session.latest_assistant_message_id) ?? "none";
+  const summary = (asOptionalString(session.latest_summary) ?? "").slice(0, 120);
+  return `${messageId}|${summary}`;
+}
+
+function replaceTrackedSessionId(sessionIds: string[], oldSessionId: string, newSessionId: string): string[] {
+  const updated = sessionIds.map((id) => (id === oldSessionId ? newSessionId : id));
+  if (!updated.includes(newSessionId)) updated.push(newSessionId);
+  return dedupeStrings(updated);
+}
+
+function isConnectedComputerError(errorMessage: string): boolean {
+  const normalized = errorMessage.toLowerCase();
+  return normalized.includes("connected computer") || normalized.includes("requires a connected computer");
+}
+
+function parseSessionComputerId(session: Record<string, unknown>): string | null {
+  return asOptionalString(session.computer_id) ?? asOptionalString(session.computerId);
+}
+
+function formatConfidence(value: unknown): string {
+  const numeric = asOptionalNumber(value);
+  if (numeric === null) return "none";
+  return numeric.toFixed(2);
+}
+
+function parseSessionCitations(session: Record<string, unknown>): string[] {
+  return asStringArray(session.citation_urls);
+}
+
+const DEFAULT_COMPLETION_KEYWORDS = [
+  "done",
+  "complete",
+  "completed",
+  "resolved",
+  "finished",
+  "successful",
+  "success",
+];
+
+const DEFAULT_BLOCKED_KEYWORDS = [
+  "blocked",
+  "cannot proceed",
+  "waiting on",
+  "missing credential",
+  "need approval",
+  "need access",
+  "stuck",
+];
+
+function textHasAnyKeyword(text: string | null, keywords: string[]): boolean {
+  if (!text) return false;
+  const haystack = text.toLowerCase();
+  return keywords.some((keyword) => {
+    const needle = keyword.trim().toLowerCase();
+    return needle.length > 0 && haystack.includes(needle);
+  });
+}
+
+async function inspectFactorySessions(args: {
+  session_ids?: unknown;
+  limit?: unknown;
+  include_messages?: unknown;
+  message_limit?: unknown;
+  completion_keywords?: unknown;
+  min_confidence?: unknown;
+  require_citations?: unknown;
+}) {
+  const includeMessages = args.include_messages === true;
+  const messageLimit = Math.max(1, Math.min(100, asNonNegativeInt(args.message_limit, 20)));
+  const completionKeywords = asStringArray(args.completion_keywords);
+  const effectiveCompletionKeywords = completionKeywords.length > 0
+    ? completionKeywords
+    : DEFAULT_COMPLETION_KEYWORDS;
+  const minConfidence = normalizeConfidenceThreshold(args.min_confidence);
+  const requireCitations = asBool(args.require_citations, false);
+  const blockedKeywords = DEFAULT_BLOCKED_KEYWORDS;
+
+  const explicitIds = dedupeStrings(asStringArray(args.session_ids));
+  const fallbackLimit = Math.max(1, Math.min(50, asNonNegativeInt(args.limit, 10)));
+
+  let targetSessionIds = explicitIds;
+  if (targetSessionIds.length === 0) {
+    const recentSessions = await listSessions(fallbackLimit);
+    targetSessionIds = dedupeStrings(
+      recentSessions
+        .map((session) => resolveFactorySessionId(asRecord(session)))
+        .filter((sessionId): sessionId is string => Boolean(sessionId)),
+    );
+  }
+
+  if (targetSessionIds.length === 0) {
+    throw new Error("No sessions found. Provide session_ids or ensure Factory list_sessions has results.");
+  }
+
+  const snapshots: Array<Record<string, unknown>> = [];
+  for (const sessionId of targetSessionIds) {
+    try {
+      const session = asRecord(await getSession(sessionId));
+      const sessionStatus = (asOptionalString(session.status) ?? "unknown").toLowerCase();
+      const title = asOptionalString(session.title) ?? asOptionalString(session.summary) ?? null;
+      let messages: unknown[] = [];
+      if (includeMessages || messageLimit > 0) {
+        messages = await getSessionMessages(sessionId, messageLimit);
+      }
+
+      const latestAssistant = latestAssistantMessageSnapshot(messages);
+      const latestSummary = latestAssistant.summary;
+      const latestAssistantText = latestAssistant.full_text;
+      const completionKeywordHit = textHasAnyKeyword(latestAssistantText ?? latestSummary, effectiveCompletionKeywords);
+      const blocked = textHasAnyKeyword(latestAssistantText ?? latestSummary, blockedKeywords);
+      const confidenceScore = extractConfidenceScore(latestAssistantText ?? latestSummary);
+      const citationUrls = extractCitationUrls(latestAssistantText ?? latestSummary);
+      const confidencePassed = minConfidence === null
+        || (confidenceScore !== null && confidenceScore >= minConfidence);
+      const citationPassed = !requireCitations || citationUrls.length > 0;
+      const completionGatePassed = completionKeywordHit && confidencePassed && citationPassed;
+      let completionGateReason: string | null = null;
+      if (completionKeywordHit && !completionGatePassed) {
+        if (!confidencePassed && minConfidence !== null) {
+          completionGateReason = `confidence_below_threshold(required=${minConfidence.toFixed(2)}, observed=${formatConfidence(confidenceScore)})`;
+        } else if (!citationPassed) {
+          completionGateReason = "citations_missing";
+        } else {
+          completionGateReason = "completion_gate_failed";
+        }
+      }
+      const completed = completionGatePassed;
+      const sessionComputerId = parseSessionComputerId(session);
+
+      snapshots.push({
+        session_id: sessionId,
+        title,
+        status: sessionStatus,
+        completed,
+        blocked,
+        latest_summary: latestSummary,
+        latest_assistant_message_id: latestAssistant.message_id,
+        latest_assistant_created_at: latestAssistant.created_at,
+        confidence_score: confidenceScore,
+        citation_urls: citationUrls,
+        completion_keyword_hit: completionKeywordHit,
+        completion_gate_passed: completionGatePassed,
+        completion_gate_reason: completionGateReason,
+        computer_id: sessionComputerId,
+        updated_at: asOptionalString(session.updatedAt) ?? asOptionalString(session.updated_at) ?? null,
+        messages: includeMessages ? messages : undefined,
+      });
+    } catch (error) {
+      snapshots.push({
+        session_id: sessionId,
+        status: "error",
+        completed: false,
+        blocked: true,
+        latest_summary: null,
+        error: redactSecrets(error instanceof Error ? error.message : String(error)),
+      });
+    }
+  }
+
+  const completedCount = snapshots.filter((snapshot) => snapshot.completed === true).length;
+  const blockedCount = snapshots.filter((snapshot) => snapshot.blocked === true).length;
+  const runningCount = snapshots.filter((snapshot) => snapshot.status === "running").length;
+  const completionGateFailedCount = snapshots.filter((snapshot) => snapshot.completion_keyword_hit === true
+    && snapshot.completion_gate_passed !== true).length;
+
+  return {
+    sessions: snapshots,
+    summary: {
+      total: snapshots.length,
+      completed: completedCount,
+      blocked: blockedCount,
+      running: runningCount,
+      gated_incomplete: completionGateFailedCount,
+      pending: Math.max(0, snapshots.length - completedCount),
+    },
+    completion_keywords: effectiveCompletionKeywords,
+    completion_gate: {
+      min_confidence: minConfidence,
+      require_citations: requireCitations,
+    },
+  };
+}
+
+async function handleFactorySyncSessions(args: Record<string, unknown>) {
+  const report = await inspectFactorySessions(args);
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        status: "ok",
+        ...report,
+        generated_at: nowIso(),
+      }, null, 2),
+    }],
+  };
+}
+
+function renderFactoryReprompt(template: string, values: Record<string, string>): string {
+  let output = template;
+  for (const [key, value] of Object.entries(values)) {
+    output = output.split(`{${key}}`).join(value);
+  }
+  return output;
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function makeAutoloopReprompt(args: {
+  template: string | null;
+  objective: string;
+  desiredEffect: string | null;
+  round: number;
+  maxRounds: number;
+  sessionId: string;
+  status: string;
+  latestSummary: string | null;
+  minConfidence: number | null;
+  requireCitations: boolean;
+  completionGateReason: string | null;
+}): string {
+  const fallback = [
+    `Autonomous follow-up round ${args.round}/${args.maxRounds}.`,
+    `Objective: ${args.objective}`,
+    `Desired effect: ${args.desiredEffect ?? "Report explicit DONE when objective is fully complete."}`,
+    `Current status: ${args.status}`,
+    `Latest visible summary: ${args.latestSummary ?? "none"}`,
+    `Completion gate, min confidence: ${args.minConfidence !== null ? args.minConfidence.toFixed(2) : "disabled"}, citations required: ${args.requireCitations ? "yes" : "no"}.`,
+    `Last completion gate result: ${args.completionGateReason ?? "passed or not triggered"}.`,
+    "Continue execution now, then respond with either DONE and proof, or BLOCKED with exact missing dependency.",
+  ].join("\n");
+
+  if (!args.template) return fallback;
+  return renderFactoryReprompt(args.template, {
+    objective: args.objective,
+    desired_effect: args.desiredEffect ?? "",
+    round: String(args.round),
+    max_rounds: String(args.maxRounds),
+    session_id: args.sessionId,
+    status: args.status,
+    latest_summary: args.latestSummary ?? "",
+    min_confidence: args.minConfidence !== null ? args.minConfidence.toFixed(2) : "",
+    require_citations: args.requireCitations ? "true" : "false",
+    completion_gate_reason: args.completionGateReason ?? "",
+  });
+}
+
+async function handleFactoryAutoloop(args: Record<string, unknown>) {
+  const objective = redactSecrets(asOptionalString(args.objective) ?? "");
+  if (!objective) throw new Error("objective is required");
+
+  const requestedSessionIds = dedupeStrings(asStringArray(args.session_ids));
+  if (requestedSessionIds.length === 0) throw new Error("session_ids is required");
+  let trackedSessionIds = [...requestedSessionIds];
+
+  const desiredEffect = redactSecrets(asOptionalString(args.desired_effect) ?? "") || null;
+  const repromptTemplate = asOptionalString(args.reprompt_template);
+  const maxRounds = Math.max(1, Math.min(12, asNonNegativeInt(args.max_rounds, 3)));
+  const pollDelayMs = Math.max(250, Math.min(10000, asNonNegativeInt(args.poll_delay_ms, 1500)));
+  const messageLimit = Math.max(1, Math.min(100, asNonNegativeInt(args.message_limit, 20)));
+  const includeMessages = args.include_messages === true;
+  const completionKeywords = asStringArray(args.completion_keywords);
+  const minConfidence = normalizeConfidenceThreshold(args.min_confidence);
+  const requireCitations = asBool(args.require_citations, false);
+  const pushToPerplexityShadow = asBool(args.push_to_perplexity_shadow, true);
+  const computerId = asOptionalString(args.computer_id) ?? undefined;
+  const correlationId = normalizeCorrelationId(asOptionalString(args.correlation_id) ?? undefined);
+
+  const roundReports: Array<Record<string, unknown>> = [];
+  const rebindEvents: Array<Record<string, unknown>> = [];
+  const repromptCursorBySession = new Map<string, string>();
+  let totalReprompts = 0;
+  let finalSessions: Array<Record<string, unknown>> = [];
+  let discoveredComputerId: string | null = null;
+
+  async function resolveFallbackComputerId(): Promise<string | null> {
+    if (computerId) return computerId;
+    if (discoveredComputerId !== null) return discoveredComputerId.length > 0 ? discoveredComputerId : null;
+    try {
+      const computers = await listComputers(25);
+      const activeComputer = computers.find((computer) => {
+        const status = (asOptionalString(asRecord(computer).status) ?? "unknown").toLowerCase();
+        return status === "active";
+      });
+      discoveredComputerId = activeComputer
+        ? (asOptionalString(asRecord(activeComputer).id) ?? "")
+        : "";
+      return discoveredComputerId.length > 0 ? discoveredComputerId : null;
+    } catch {
+      discoveredComputerId = "";
+      return null;
+    }
+  }
+
+  for (let round = 1; round <= maxRounds; round += 1) {
+    const inspection = await inspectFactorySessions({
+      session_ids: trackedSessionIds,
+      include_messages: includeMessages,
+      message_limit: messageLimit,
+      completion_keywords: completionKeywords,
+      min_confidence: minConfidence,
+      require_citations: requireCitations,
+    });
+
+    finalSessions = inspection.sessions;
+    const pendingSessions = finalSessions
+      .map((session) => asRecord(session))
+      .filter((session) => session.completed !== true);
+    const reprompts: Array<Record<string, unknown>> = [];
+
+    for (const session of pendingSessions) {
+      const sourceSessionId = asOptionalString(session.session_id);
+      if (!sourceSessionId) continue;
+      const sessionStatus = (asOptionalString(session.status) ?? "unknown").toLowerCase();
+      if (sessionStatus === "running") {
+        reprompts.push({
+          session_id: sourceSessionId,
+          skipped: true,
+          reason: "session_running",
+        });
+        continue;
+      }
+
+      const cursor = buildAutoloopCursor(session);
+      const previousCursor = repromptCursorBySession.get(sourceSessionId);
+      if (previousCursor && previousCursor === cursor) {
+        reprompts.push({
+          session_id: sourceSessionId,
+          skipped: true,
+          reason: "no_new_assistant_progress_since_last_reprompt",
+        });
+        continue;
+      }
+
+      let effectiveComputerId = computerId ?? parseSessionComputerId(session) ?? undefined;
+      if (!effectiveComputerId) {
+        effectiveComputerId = (await resolveFallbackComputerId()) ?? undefined;
+      }
+
+      const prompt = makeAutoloopReprompt({
+        template: repromptTemplate,
+        objective,
+        desiredEffect,
+        round,
+        maxRounds,
+        sessionId: sourceSessionId,
+        status: sessionStatus,
+        latestSummary: asOptionalString(session.latest_summary),
+        minConfidence,
+        requireCitations,
+        completionGateReason: asOptionalString(session.completion_gate_reason),
+      });
+
+      try {
+        const result = await addSessionMessage(sourceSessionId, { text: prompt, computerId: effectiveComputerId });
+        reprompts.push({
+          session_id: sourceSessionId,
+          message_id: result.messageId,
+          status_after_submit: result.status,
+          cursor,
+          computer_id: effectiveComputerId ?? null,
+        });
+        repromptCursorBySession.set(sourceSessionId, cursor);
+        totalReprompts += 1;
+      } catch (error) {
+        const errorMessage = redactSecrets(error instanceof Error ? error.message : String(error));
+        if (!isConnectedComputerError(errorMessage)) {
+          reprompts.push({
+            session_id: sourceSessionId,
+            error: errorMessage,
+          });
+          continue;
+        }
+
+        if (!effectiveComputerId) {
+          reprompts.push({
+            session_id: sourceSessionId,
+            error: `${errorMessage}; auto_rebind_unavailable=no_active_computer`,
+          });
+          continue;
+        }
+
+        reprompts.push({
+          session_id: sourceSessionId,
+          warning: `${errorMessage}; attempting_auto_rebind`,
+        });
+
+        try {
+          const reboundSession = await createSession({
+            computerId: effectiveComputerId,
+            sessionSettings: {
+              interactionMode: "auto",
+              autonomyLevel: "high",
+              reasoningEffort: "high",
+            },
+          });
+          const reboundSessionId = resolveFactorySessionId(asRecord(reboundSession));
+          if (!reboundSessionId) throw new Error("Factory createSession returned no session id");
+
+          trackedSessionIds = replaceTrackedSessionId(trackedSessionIds, sourceSessionId, reboundSessionId);
+          rebindEvents.push({
+            round,
+            from_session_id: sourceSessionId,
+            to_session_id: reboundSessionId,
+            reason: "connected_computer_required",
+            computer_id: effectiveComputerId,
+          });
+
+          const reboundPrompt = [
+            `Session ${sourceSessionId} required a connected computer, continue execution in rebound session ${reboundSessionId}.`,
+            prompt,
+          ].join("\n");
+          const reboundResult = await addSessionMessage(reboundSessionId, {
+            text: reboundPrompt,
+            computerId: effectiveComputerId,
+          });
+          reprompts.push({
+            session_id: sourceSessionId,
+            rebound_session_id: reboundSessionId,
+            message_id: reboundResult.messageId,
+            status_after_submit: reboundResult.status,
+            rebind_reason: "connected_computer_required",
+            computer_id: effectiveComputerId,
+            cursor,
+          });
+          repromptCursorBySession.set(reboundSessionId, cursor);
+          totalReprompts += 1;
+        } catch (rebindError) {
+          reprompts.push({
+            session_id: sourceSessionId,
+            error: `${errorMessage}; rebind_failed=${redactSecrets(rebindError instanceof Error ? rebindError.message : String(rebindError))}`,
+          });
+        }
+      }
+    }
+
+    const compactSessionSummary = finalSessions
+      .map((session) => asRecord(session))
+      .map((session) => ({
+        session_id: session.session_id,
+        status: session.status,
+        completed: session.completed,
+        blocked: session.blocked,
+        latest_summary: session.latest_summary,
+        latest_assistant_message_id: session.latest_assistant_message_id,
+        completion_gate_passed: session.completion_gate_passed,
+        completion_gate_reason: session.completion_gate_reason,
+        confidence_score: session.confidence_score,
+        citation_urls: parseSessionCitations(session),
+        computer_id: parseSessionComputerId(session),
+      }));
+
+    roundReports.push({
+      round,
+      summary: inspection.summary,
+      completion_gate: inspection.completion_gate,
+      sessions: compactSessionSummary,
+      reprompts,
+      reprompts_sent: reprompts.filter((item) => !("error" in item)).length,
+      tracked_session_ids: trackedSessionIds,
+      generated_at: nowIso(),
+    });
+
+    if (pushToPerplexityShadow) {
+      const findings = compactSessionSummary
+        .map((session) =>
+          `${session.session_id}: status=${session.status}, completed=${session.completed === true ? "yes" : "no"}, blocked=${session.blocked === true ? "yes" : "no"}, confidence=${formatConfidence(session.confidence_score)}, citations=${session.citation_urls.length}, gate=${session.completion_gate_passed === true ? "pass" : "fail"}, latest=${asOptionalString(session.latest_summary) ?? "none"}`)
+        .join(" | ");
+      storeTypedMemoryRecord({
+        category: "observation",
+        content: `Perplexity Query: Factory droid autoloop for objective ${objective} | Findings: round ${round}/${maxRounds}; ${findings}`,
+        metadata: {
+          source: "perplexity",
+          source_type: "factory_droid_sync",
+          query: `Factory droid autoloop objective: ${objective}`,
+          findings,
+          context: desiredEffect,
+          session_ids: trackedSessionIds,
+          round,
+          max_rounds: maxRounds,
+          completion_gate: {
+            min_confidence: minConfidence,
+            require_citations: requireCitations,
+          },
+          session_citations: compactSessionSummary.map((session) => ({
+            session_id: session.session_id,
+            citation_urls: session.citation_urls,
+          })),
+          tags: ["factory", "droid", "autoloop", "sync"],
+          ingested_at: nowIso(),
+        },
+        trace: {
+          source: "perplexity",
+          correlationId,
+          timestamp: nowIso(),
+          confidence: "high",
+        },
+      });
+    }
+
+    const allCompleted = inspection.summary.pending === 0;
+    if (allCompleted || round >= maxRounds) break;
+    await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
+  }
+
+  try {
+    const finalInspection = await inspectFactorySessions({
+      session_ids: trackedSessionIds,
+      include_messages: includeMessages,
+      message_limit: messageLimit,
+      completion_keywords: completionKeywords,
+      min_confidence: minConfidence,
+      require_citations: requireCitations,
+    });
+    finalSessions = finalInspection.sessions;
+  } catch {
+    // Keep latest round snapshot when final refresh fails.
+  }
+
+  const completedSessions = finalSessions.filter((session) => asRecord(session).completed === true).length;
+  const blockedSessions = finalSessions.filter((session) => asRecord(session).blocked === true).length;
+  const pendingSessions = Math.max(0, finalSessions.length - completedSessions);
+
+  const response = {
+    status: pendingSessions === 0 ? "completed" : "partial",
+    objective,
+    desired_effect: desiredEffect,
+    completion_gate: {
+      min_confidence: minConfidence,
+      require_citations: requireCitations,
+    },
+    correlation_id: correlationId,
+    rounds_executed: roundReports.length,
+    rounds_planned: maxRounds,
+    reprompts_sent: totalReprompts,
+    rebind_events: rebindEvents,
+    tracked_session_ids: trackedSessionIds,
+    sessions_total: finalSessions.length,
+    sessions_completed: completedSessions,
+    sessions_blocked: blockedSessions,
+    sessions_pending: pendingSessions,
+    final_sessions: finalSessions.map((rawSession) => {
+      const session = asRecord(rawSession);
+      return {
+        session_id: session.session_id,
+        status: session.status,
+        completed: session.completed,
+        blocked: session.blocked,
+        latest_summary: session.latest_summary,
+        latest_assistant_message_id: session.latest_assistant_message_id,
+        completion_gate_passed: session.completion_gate_passed,
+        completion_gate_reason: session.completion_gate_reason,
+        confidence_score: session.confidence_score,
+        citation_urls: parseSessionCitations(session),
+        computer_id: parseSessionComputerId(session),
+        error: session.error,
+        messages: includeMessages ? session.messages : undefined,
+      };
+    }),
+    rounds: roundReports,
+    generated_at: nowIso(),
+  };
+
+  storeTypedMemoryRecord({
+    category: "workflow",
+    content: `Factory autoloop completed for objective "${objective}" with ${completedSessions}/${finalSessions.length} sessions complete.`,
+    metadata: {
+      source: "factory_autoloop",
+      objective,
+      desired_effect: desiredEffect,
+      rounds_executed: roundReports.length,
+      rounds_planned: maxRounds,
+      reprompts_sent: totalReprompts,
+      rebind_events: rebindEvents,
+      completion_gate: {
+        min_confidence: minConfidence,
+        require_citations: requireCitations,
+      },
+      tracked_session_ids: trackedSessionIds,
+      sessions_total: finalSessions.length,
+      sessions_completed: completedSessions,
+      sessions_blocked: blockedSessions,
+      sessions_pending: pendingSessions,
+      correlation_id: correlationId,
+    },
+    trace: {
+      source: "factory_api",
+      confidence: pendingSessions === 0 ? "high" : "medium",
+      correlationId,
+    },
+  });
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify(response, null, 2),
+    }],
+    isError: pendingSessions > 0,
+  };
+}
+
 async function handleFactoryCreateMission(args: Record<string, unknown>) {
   const title = typeof args.title === "string" ? args.title : "";
   const description = typeof args.description === "string" ? args.description : "";
@@ -5230,6 +5936,8 @@ const HANDLERS: Record<string, (a: any) => Promise<ToolResult>> = {
   perplexity_shadow_status: handlePerplexityShadowStatus,
   factory_list_sessions: handleFactoryListSessions,
   factory_get_session: handleFactoryGetSession,
+  factory_sync_sessions: handleFactorySyncSessions,
+  factory_autoloop: handleFactoryAutoloop,
   factory_create_mission: handleFactoryCreateMission,
 };
 
