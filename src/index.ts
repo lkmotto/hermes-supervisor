@@ -1805,7 +1805,14 @@ async function handleMemoryRecall(args: { category?: string; query?: string; lim
   stmt.bind(params);
   while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
-  return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
+  const normalizedRows = rows.map((row) => {
+    const record = asRecord(row);
+    return {
+      ...record,
+      metadata: parseMetadata(record.metadata),
+    };
+  });
+  return { content: [{ type: "text", text: JSON.stringify(normalizedRows, null, 2) }] };
 }
 
 async function handlePlan(args: { goal: string; context?: string }) {
