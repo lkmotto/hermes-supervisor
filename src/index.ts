@@ -5427,7 +5427,7 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
 
   const desiredEffect = redactSecrets(asOptionalString(args.desired_effect) ?? "") || null;
   const repromptTemplate = asOptionalString(args.reprompt_template);
-  const maxRounds = Math.max(1, Math.min(12, asNonNegativeInt(args.max_rounds, 3)));
+  const maxRounds = Math.max(0, Math.min(12, asNonNegativeInt(args.max_rounds, 3)));
   const pollDelayMs = Math.max(250, Math.min(10000, asNonNegativeInt(args.poll_delay_ms, 1500)));
   const messageLimit = Math.max(1, Math.min(100, asNonNegativeInt(args.message_limit, 20)));
   const includeMessages = args.include_messages === true;
@@ -5522,6 +5522,7 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
         requireCitations,
         completionGateReason: asOptionalString(session.completion_gate_reason),
       });
+      repromptCursorBySession.set(sourceSessionId, cursor);
 
       try {
         const result = await addSessionMessage(sourceSessionId, { text: prompt, computerId: effectiveComputerId });
@@ -5570,6 +5571,7 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
           if (!reboundSessionId) throw new Error("Factory createSession returned no session id");
 
           trackedSessionIds = replaceTrackedSessionId(trackedSessionIds, sourceSessionId, reboundSessionId);
+          repromptCursorBySession.delete(sourceSessionId);
           rebindEvents.push({
             round,
             from_session_id: sourceSessionId,

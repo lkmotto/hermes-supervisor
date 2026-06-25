@@ -5,6 +5,7 @@
  * These tests exercise the live Hermes MCP HTTP surface on 127.0.0.1:8150
  * and validate behavior for:
  *   - VAL-LOOP-001 through VAL-LOOP-012
+ *   - VAL-CORE-004 through VAL-CORE-005
  *   - VAL-CORE-008 through VAL-CORE-010, VAL-CORE-012, VAL-CORE-013
  *
  * Run with: node tests/business-pm-loop.test.mjs
@@ -53,6 +54,10 @@ async function callTool(name, args) {
 
 function generateCorrelationId() {
   return `${VALIDATION_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function generateUnknownSessionId() {
+  return `missing-session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function assert(condition, message) {
@@ -724,6 +729,64 @@ async function testValCore013_HermesValidationEvidenceMustBeCurrentCommitMatched
   console.log("  PASS: Hermes deploy rejects stale or commit-mismatched validation evidence");
 }
 
+async function testValCore004_AutoloopRepromptIdempotentOnUnchangedCursor() {
+  console.log("\n=== Test: VAL-CORE-004 Autoloop suppresses duplicate reprompts on unchanged cursor ===");
+  const unknownSessionId = generateUnknownSessionId();
+  const correlationId = generateCorrelationId();
+
+  const result = await callTool("factory_autoloop", {
+    session_ids: [unknownSessionId],
+    objective: `Validate idempotent reprompt suppression for unchanged cursor [${correlationId}]`,
+    max_rounds: 2,
+    poll_delay_ms: 250,
+    push_to_perplexity_shadow: false,
+    correlation_id: correlationId,
+  });
+
+  const rounds = Array.isArray(result.rounds) ? result.rounds : [];
+  assert(rounds.length === 2, `Expected exactly 2 rounds for max_rounds=2, got ${rounds.length}`);
+
+  const firstRoundReprompts = Array.isArray(rounds[0]?.reprompts) ? rounds[0].reprompts : [];
+  const firstRoundError = firstRoundReprompts.find((entry) =>
+    entry?.session_id === unknownSessionId && typeof entry?.error === "string");
+  assert(Boolean(firstRoundError), "Round 1 should record a submit error for unknown session");
+
+  const secondRoundReprompts = Array.isArray(rounds[1]?.reprompts) ? rounds[1].reprompts : [];
+  const dedupeSkip = secondRoundReprompts.find((entry) =>
+    entry?.session_id === unknownSessionId
+    && entry?.skipped === true
+    && entry?.reason === "no_new_assistant_progress_since_last_reprompt");
+  assert(Boolean(dedupeSkip), "Round 2 should skip duplicate reprompt with unchanged assistant progress");
+  assert(!("message_id" in dedupeSkip), "Skipped duplicate reprompt should not include message_id");
+
+  console.log("  PASS: Autoloop records deterministic duplicate-reprompt skip reason on unchanged cursor");
+}
+
+async function testValCore005_AutoloopBoundedByConfiguredRounds() {
+  console.log("\n=== Test: VAL-CORE-005 Autoloop stays within configured max_rounds and returns partial at bound ===");
+  const unknownSessionId = generateUnknownSessionId();
+  const correlationId = generateCorrelationId();
+
+  const result = await callTool("factory_autoloop", {
+    session_ids: [unknownSessionId],
+    objective: `Validate deterministic max-round bound behavior [${correlationId}]`,
+    max_rounds: 0,
+    poll_delay_ms: 250,
+    push_to_perplexity_shadow: false,
+    correlation_id: correlationId,
+  });
+
+  assert(result.rounds_planned === 0, `Expected rounds_planned=0, got ${result.rounds_planned}`);
+  assert(result.rounds_executed === 0, `Expected rounds_executed=0, got ${result.rounds_executed}`);
+  assert(result.rounds_executed <= result.rounds_planned,
+    `Expected rounds_executed <= rounds_planned, got ${result.rounds_executed} > ${result.rounds_planned}`);
+  assert(result.sessions_pending > 0, "Expected pending sessions to remain when loop bound is reached");
+  assert(result.status === "partial", `Expected terminal status partial with pending sessions, got ${result.status}`);
+  assert(Array.isArray(result.rounds) && result.rounds.length === 0, "Expected no rounds when max_rounds=0");
+
+  console.log("  PASS: Autoloop never exceeds max_rounds and remains partial when pending sessions remain");
+}
+
 // ─── Run all tests ──────────────────────────────────────────────────
 
 async function main() {
@@ -755,6 +818,8 @@ async function main() {
     testValLoop010_WorkflowTraceToReusableKnowledge,
     testValLoop011_ProposalLinksToCoordinationRecords,
     testValLoop012_UnknownSignalsNotFabricated,
+    testValCore004_AutoloopRepromptIdempotentOnUnchangedCursor,
+    testValCore005_AutoloopBoundedByConfiguredRounds,
     testValCore008_FailClosedWithoutConfirmation,
     testValCore009_NonHermesMutationNeedsApproval,
     testValCore010_HermesScopedMutationNeedsValidationAndApproval,
