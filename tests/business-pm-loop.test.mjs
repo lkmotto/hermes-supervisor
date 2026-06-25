@@ -3,7 +3,9 @@
  * Integration tests for the Hermes business PM loop and status report tools.
  *
  * These tests exercise the live Hermes MCP HTTP surface on 127.0.0.1:8150
- * and validate the behavior specified in VAL-LOOP-001 through VAL-LOOP-012.
+ * and validate behavior for:
+ *   - VAL-LOOP-001 through VAL-LOOP-012
+ *   - VAL-CORE-008 through VAL-CORE-010, VAL-CORE-012, VAL-CORE-013
  *
  * Run with: node tests/business-pm-loop.test.mjs
  *
@@ -59,6 +61,14 @@ function assert(condition, message) {
 
 function assertHasField(obj, field, context) {
   assert(obj && typeof obj === "object" && field in obj, `${context}: missing field "${field}"`);
+}
+
+function assertRequiredFieldContains(denial, expected, context) {
+  const fields = Array.isArray(denial?.required_fields) ? denial.required_fields : [];
+  assert(
+    fields.some(field => typeof field === "string" && field.includes(expected)),
+    `${context}: required_fields should contain "${expected}", got ${JSON.stringify(fields)}`
+  );
 }
 
 // ─── Secret pattern check ────────────────────────────────────────
@@ -610,6 +620,110 @@ async function testValLoop012_UnknownSignalsNotFabricated() {
   console.log("  PASS: Unavailable inputs are marked unknown/blocked and translated into capability requests");
 }
 
+async function testValCore008_FailClosedWithoutConfirmation() {
+  console.log("\n=== Test: VAL-CORE-008 Mutating VPS call denied without confirm=true ===");
+
+  const denial = await callTool("vps_restart_project", {
+    project: "hermes",
+  });
+
+  assert(denial.status === "denied", `Expected denied status, got ${denial.status}`);
+  assert(denial.reason === "confirmation_required", `Expected confirmation_required, got ${denial.reason}`);
+  assertHasField(denial, "risk_level", "VAL-CORE-008 denial");
+  assertRequiredFieldContains(denial, "confirm=true", "VAL-CORE-008 denial");
+
+  console.log("  PASS: Mutating call without confirm=true is denied with confirmation_required");
+}
+
+async function testValCore009_NonHermesMutationNeedsApproval() {
+  console.log("\n=== Test: VAL-CORE-009 Non-Hermes mutation denied as dangerous/global without approval ===");
+
+  const denial = await callTool("vps_start_project", {
+    project: "unrelated-project",
+    confirm: true,
+  });
+
+  assert(denial.status === "denied", `Expected denied status, got ${denial.status}`);
+  assert(denial.reason === "approval_required", `Expected approval_required, got ${denial.reason}`);
+  assert(denial.risk_level === "dangerous-global-mutation", `Expected dangerous-global-mutation, got ${denial.risk_level}`);
+  assertRequiredFieldContains(denial, "approval", "VAL-CORE-009 denial");
+
+  console.log("  PASS: Non-Hermes project control is denied without explicit approval");
+}
+
+async function testValCore010_HermesScopedMutationNeedsValidationAndApproval() {
+  console.log("\n=== Test: VAL-CORE-010 Hermes mutation denied without validation evidence and approval ===");
+
+  const denial = await callTool("vps_deploy", {
+    name: "hermes",
+    compose_content: "services: {}\n",
+    confirm: true,
+  });
+
+  assert(denial.status === "denied", `Expected denied status, got ${denial.status}`);
+  assert(denial.reason === "validation_required" || denial.reason === "approval_required",
+    `Expected validation_required or approval_required, got ${denial.reason}`);
+  assert(denial.risk_level === "hermes-scoped-mutation", `Expected hermes-scoped-mutation, got ${denial.risk_level}`);
+  assertRequiredFieldContains(denial, "validation_id", "VAL-CORE-010 denial");
+  assertRequiredFieldContains(denial, "validation_evidence", "VAL-CORE-010 denial");
+  assertRequiredFieldContains(denial, "approval", "VAL-CORE-010 denial");
+
+  console.log("  PASS: Hermes-scoped mutation is denied without validation evidence and approval provenance");
+}
+
+async function testValCore012_DangerousMutationNeedsApprovalAfterConfirmation() {
+  console.log("\n=== Test: VAL-CORE-012 Dangerous/global mutation denied without approval after confirm=true ===");
+
+  const denial = await callTool("vps_snapshot", {
+    confirm: true,
+  });
+
+  assert(denial.status === "denied", `Expected denied status, got ${denial.status}`);
+  assert(denial.reason === "approval_required", `Expected approval_required, got ${denial.reason}`);
+  assert(denial.risk_level === "dangerous-global-mutation", `Expected dangerous-global-mutation, got ${denial.risk_level}`);
+  assertRequiredFieldContains(denial, "approval", "VAL-CORE-012 denial");
+
+  console.log("  PASS: Dangerous/global mutation remains approval-gated after confirmation");
+}
+
+async function testValCore013_HermesValidationEvidenceMustBeCurrentCommitMatched() {
+  console.log("\n=== Test: VAL-CORE-013 Hermes deploy denied for stale/mismatched validation evidence ===");
+
+  const staleBuildDenial = await callTool("vps_deploy", {
+    name: "hermes",
+    compose_content: "services: {}\n",
+    confirm: true,
+    approval: { approved_by: "validator", reason: "negative policy test" },
+    validation_id: "VAL-CORE-013-STALE-BUILD",
+    validation_evidence: {
+      commit: "deadbeef1",
+      build_passed: false,
+    },
+  });
+
+  assert(staleBuildDenial.status === "denied", `Expected denied status, got ${staleBuildDenial.status}`);
+  assert(staleBuildDenial.reason === "validation_required", `Expected validation_required, got ${staleBuildDenial.reason}`);
+  assertRequiredFieldContains(staleBuildDenial, "validation_evidence", "VAL-CORE-013 stale-build denial");
+
+  const mismatchedCommitDenial = await callTool("vps_deploy", {
+    name: "hermes",
+    compose_content: "services: {}\n",
+    confirm: true,
+    approval: { approved_by: "validator", reason: "negative policy test" },
+    validation_id: "VAL-CORE-013-MISMATCH-COMMIT",
+    validation_evidence: {
+      commit: "stalecommit12345",
+      build_passed: true,
+    },
+  });
+
+  assert(mismatchedCommitDenial.status === "denied", `Expected denied status, got ${mismatchedCommitDenial.status}`);
+  assert(mismatchedCommitDenial.reason === "validation_required", `Expected validation_required, got ${mismatchedCommitDenial.reason}`);
+  assertRequiredFieldContains(mismatchedCommitDenial, "validation_evidence", "VAL-CORE-013 mismatch-commit denial");
+
+  console.log("  PASS: Hermes deploy rejects stale or commit-mismatched validation evidence");
+}
+
 // ─── Run all tests ──────────────────────────────────────────────────
 
 async function main() {
@@ -641,6 +755,11 @@ async function main() {
     testValLoop010_WorkflowTraceToReusableKnowledge,
     testValLoop011_ProposalLinksToCoordinationRecords,
     testValLoop012_UnknownSignalsNotFabricated,
+    testValCore008_FailClosedWithoutConfirmation,
+    testValCore009_NonHermesMutationNeedsApproval,
+    testValCore010_HermesScopedMutationNeedsValidationAndApproval,
+    testValCore012_DangerousMutationNeedsApprovalAfterConfirmation,
+    testValCore013_HermesValidationEvidenceMustBeCurrentCommitMatched,
   ];
 
   let passed = 0;
