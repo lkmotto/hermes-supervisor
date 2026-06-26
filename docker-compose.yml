@@ -16,7 +16,7 @@ services:
       - HERMES_MCP_AUTH_TOKEN=${HERMES_MCP_AUTH_TOKEN}
       - FACTORY_API_KEY=${FACTORY_API_KEY}
       - OLLAMA_HOST=http://host.docker.internal:11434
-      - OLLAMA_MODEL=gemma3:4b
+      - OLLAMA_MODEL=gemma4:latest
       - HERMES_AUTONOMOUS_INTERVAL=300000
     volumes:
       - hermes_data:/data
