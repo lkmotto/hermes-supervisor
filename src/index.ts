@@ -6362,16 +6362,6 @@ Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "war
         bestWarnings = [];
         break;
       }
-    } else {
-      const payload: Record<string, unknown> = {};
-      for (const f of groundedFacts) {
-        const sfrepField = sfrepFieldCatalog[f.canonical_key as string];
-        if (sfrepField) payload[sfrepField] = f.value;
-      }
-      bestPayload = payload;
-      bestPlan = "deterministic fallback";
-      bestWarnings = [];
-      break;
     }
 
     // Verify: check for empty payload, type mismatches, missing required fields
