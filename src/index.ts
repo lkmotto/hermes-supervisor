@@ -5343,6 +5343,15 @@ async function inspectFactorySessions(args: {
         completed: false,
         blocked: true,
         latest_summary: null,
+        latest_assistant_message_id: null,
+        latest_assistant_created_at: null,
+        confidence_score: null,
+        citation_urls: [],
+        completion_keyword_hit: false,
+        completion_gate_passed: false,
+        completion_gate_reason: "session_fetch_error",
+        computer_id: null,
+        updated_at: null,
         error: redactSecrets(error instanceof Error ? error.message : String(error)),
       });
     }
@@ -5658,7 +5667,7 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
       completion_gate: inspection.completion_gate,
       sessions: compactSessionSummary,
       reprompts,
-      reprompts_sent: reprompts.filter((item) => !("error" in item)).length,
+      reprompts_sent: reprompts.filter((item) => "message_id" in item && !("skipped" in item) && !("warning" in item) && !("error" in item)).length,
       tracked_session_ids: trackedSessionIds,
       generated_at: nowIso(),
     });
