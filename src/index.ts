@@ -6352,8 +6352,6 @@ Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "war
         if (bestWarnings.length > 0) diagnostics.push(`Warnings: ${bestWarnings.join("; ")}`);
       } catch (err) {
         diagnostics.push(`Attempt ${attempt}: AI parse failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    } else {
         const payload: Record<string, unknown> = {};
         for (const f of groundedFacts) {
           const sfrepField = sfrepFieldCatalog[f.canonical_key as string];
@@ -6371,8 +6369,8 @@ Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "war
         if (sfrepField) payload[sfrepField] = f.value;
       }
       bestPayload = payload;
-      bestPlan = "deterministic (no GROQ_API_KEY)";
-      diagnostics.push("No GROQ_API_KEY, using deterministic mapping");
+      bestPlan = "deterministic fallback";
+      bestWarnings = [];
       break;
     }
 
