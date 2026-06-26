@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@model
 import initSqlJs from "sql.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5947,6 +5947,88 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
   return { content: [{ type: "text", text: JSON.stringify(redactMetadata(statusReport), null, 2) }] };
 }
 
+// ─── Autonomous loop (Hermes drives itself) ────────────────────────
+
+const OLLAMA_HOST = process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434";
+const AUTONOMOUS_INTERVAL_MS = parseInt(process.env.HERMES_AUTONOMOUS_INTERVAL ?? "300000", 10);
+
+const WORKFILE_ROOTS = [
+  "/workspace",
+  "/app/workfiles",
+];
+
+async function ollamaChat(systemPrompt: string, userPrompt: string, model: string = "gemma3:4b"): Promise<string | null> {
+  try {
+    const resp = await fetch(`${OLLAMA_HOST}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        stream: false,
+        options: { temperature: 0.0, num_predict: 2048 },
+      }),
+    });
+    if (!resp.ok) return null;
+    const body = await resp.json() as any;
+    return body?.message?.content ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function scanWorkfiles(): Promise<string[]> {
+  const found: string[] = [];
+  for (const root of WORKFILE_ROOTS) {
+    try {
+      if (!existsSync(root)) continue;
+      const entries = readdirSync(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const factsPath = join(root, entry.name, "extracted", "facts.json");
+        if (existsSync(factsPath)) {
+          found.push(join(root, entry.name));
+        }
+      }
+    } catch { /* skip inaccessible directories */ }
+  }
+  return found;
+}
+
+async function autonomousTick(): Promise<void> {
+  const correlationId = `auto-${Date.now()}`;
+  try {
+    const workfiles = await scanWorkfiles();
+    if (workfiles.length === 0) return;
+
+    for (const wf of workfiles) {
+      const args = { workfile_path: wf, max_attempts: 2 };
+      const result = await handleSfrepAutonomousHandoff(args);
+      const text = result.content?.[0]?.text;
+      if (text) {
+        const parsed = JSON.parse(text);
+        storeTypedMemoryRecord({
+          category: "observation",
+          content: `Autonomous handoff for ${wf}: ${parsed.status}, ${parsed.field_count} fields`,
+          metadata: { source: "autonomous_loop", correlation_id: correlationId, ...parsed },
+          trace: { source: "autonomous_loop", correlationId, timestamp: nowIso() },
+        });
+      }
+    }
+  } catch (err) {
+    console.error(`[autonomous] tick error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function startAutonomousLoop(): void {
+  console.error(`[autonomous] Starting loop (interval: ${AUTONOMOUS_INTERVAL_MS}ms, ollama: ${OLLAMA_HOST})`);
+  autonomousTick();
+  setInterval(autonomousTick, AUTONOMOUS_INTERVAL_MS);
+}
+
 // ─── SFREP context transport ──────────────────────────────────────
 
 async function handleSfrepContextTransport(args: {
@@ -6226,48 +6308,52 @@ async function handleSfrepAutonomousHandoff(args: {
       value_type: f.value_type,
     }));
 
-    if (groqKey) {
-      const model = args.groq_model ?? "gemma2-9b-it";
-      const systemPrompt = `You are an SFREP payload builder. Map canonical property facts to SFREP field IDs.
+    const systemPrompt = `You are an SFREP payload builder. Map canonical property facts to SFREP field IDs.
 Catalog: ${JSON.stringify(sfrepFieldCatalog)}
 Rules: Only include mappable keys. Use exact values. Booleans as true/false. Skip nulls.
 Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "warnings":[...]}`;
 
-      const userPrompt = `Attempt ${attempt}/${maxAttempts}. Map:\n${JSON.stringify(factsSummary)}\n${attempt > 1 ? `\nPrevious warnings: ${JSON.stringify(bestWarnings)}` : ""}`;
+    const userPrompt = `Attempt ${attempt}/${maxAttempts}. Map:\n${JSON.stringify(factsSummary)}\n${attempt > 1 ? `\nPrevious warnings: ${JSON.stringify(bestWarnings)}` : ""}`;
 
-      try {
-        const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: userPrompt },
-            ],
-            temperature: 0.0,
-            max_tokens: 2048,
-          }),
-        });
+    // Try Ollama first (local, free), then Groq, then deterministic
+    let aiContent: string | null = null;
+    const ollamaModel = process.env.OLLAMA_MODEL ?? "gemma3:4b";
 
-        if (resp.ok) {
-          const body = await resp.json() as any;
-          let content = body?.choices?.[0]?.message?.content ?? "";
-          content = content.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-          const aiPayload = JSON.parse(content);
-          bestPayload = aiPayload.payload ?? {};
-          bestPlan = aiPayload.mapping_plan ?? "AI mapping";
-          bestWarnings = aiPayload.warnings ?? [];
-
-          diagnostics.push(`Attempt ${attempt}: AI mapping produced ${Object.keys(bestPayload).length} fields`);
-          if (bestWarnings.length > 0) {
-            diagnostics.push(`Attempt ${attempt} warnings: ${bestWarnings.join("; ")}`);
+    aiContent = await ollamaChat(systemPrompt, userPrompt, ollamaModel);
+    if (aiContent) {
+      diagnostics.push(`Attempt ${attempt}: Ollama/${ollamaModel} response received`);
+    } else {
+      const groqKey = process.env.GROQ_API_KEY ?? "";
+      if (groqKey) {
+        try {
+          const model = args.groq_model ?? "gemma2-9b-it";
+          const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ model, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: 0.0, max_tokens: 2048 }),
+          });
+          if (resp.ok) {
+            const body = await resp.json() as any;
+            aiContent = body?.choices?.[0]?.message?.content ?? null;
+            if (aiContent) diagnostics.push(`Attempt ${attempt}: Groq/${model} response received`);
           }
-        } else {
-          throw new Error(`Groq API ${resp.status}`);
-        }
+        } catch { /* fall through */ }
+      }
+    }
+
+    if (aiContent) {
+      try {
+        let content = aiContent.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        const aiPayload = JSON.parse(content);
+        bestPayload = aiPayload.payload ?? {};
+        bestPlan = aiPayload.mapping_plan ?? "AI mapping";
+        bestWarnings = aiPayload.warnings ?? [];
+        diagnostics.push(`Attempt ${attempt}: ${Object.keys(bestPayload).length} fields`);
+        if (bestWarnings.length > 0) diagnostics.push(`Warnings: ${bestWarnings.join("; ")}`);
       } catch (err) {
-        diagnostics.push(`Attempt ${attempt}: AI failed (${err instanceof Error ? err.message : String(err)}), using deterministic fallback`);
+        diagnostics.push(`Attempt ${attempt}: AI parse failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
         const payload: Record<string, unknown> = {};
         for (const f of groundedFacts) {
           const sfrepField = sfrepFieldCatalog[f.canonical_key as string];
@@ -6939,6 +7025,7 @@ ${tab === "connections" ? `
     });
     httpServer.listen(port, host);
     console.error(`Hermes MCP ready on ${host}:${port}`);
+    startAutonomousLoop();
   } else {
     const transport = new StdioServerTransport();
     await server.connect(transport);
