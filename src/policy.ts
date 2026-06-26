@@ -102,9 +102,25 @@ export const RISK_METADATA: Record<string, RiskMetadata> = {
     level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
     scope: "read", summary: "Get a Factory Droid session by ID with optional message history.",
   },
+  factory_sync_sessions: {
+    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "read", summary: "Read synchronized progress across multiple Factory Droid sessions with optional latest message snapshots.",
+  },
+  factory_autoloop: {
+    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "memory", summary: "Runs an autonomous multi-session orchestration loop that polls Factory sessions, issues follow-up prompts, and stores sync learning records.",
+  },
   factory_create_mission: {
     level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
     scope: "memory", summary: "Creates a new Factory mission. No infrastructure change; stored in Hermes memory.",
+  },
+  sfrep_context_transport: {
+    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "memory", summary: "Reads facts from a workfile and writes sfrep/payload.json. No infrastructure change; output scoped to the workfile directory.",
+  },
+  sfrep_autonomous_handoff: {
+    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
+    scope: "memory", summary: "Runs the full SFREP context transport with verification loop. Multiple attempts with diagnostics. Writes only to workfile directory.",
   },
   vps_restart_project: {
     level: "hermes-scoped-mutation", mutating: true, confirmation_required: true, approval_required: true,

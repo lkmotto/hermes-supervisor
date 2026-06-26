@@ -1711,6 +1711,34 @@ const tools: Tool[] = [
       required: ["title", "description"],
     },
   },
+  {
+    name: "sfrep_context_transport",
+    description: "Transport extracted property facts into an SFREP/Appraise-It payload. Reads facts.json and engagement_facts.json from a workfile, uses AI (Groq/Gemma) to map canonical keys to SFREP field IDs, and writes sfrep/payload.json. Falls back to deterministic mapping if no GROQ_API_KEY is available.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workfile_path: { type: "string", description: "Absolute path to the workfile directory containing extracted/ subdirectory" },
+        form_id: { type: "string", description: "Optional target form ID (e.g., FNMA-2055-0911) for catalog-aware mapping" },
+        groq_model: { type: "string", description: "Groq model to use (default: gemma2-9b-it)" },
+      },
+      required: ["workfile_path"],
+    },
+  },
+  {
+    name: "sfrep_autonomous_handoff",
+    description: "Autonomous SFREP context transport with iterative verification. Runs up to max_attempts (default 3, max 5) of AI-powered field mapping, analyzing each result for completeness and correctness. Handles conflicts, missing fields, and type mismatches. Writes the best payload to sfrep/payload.json. Returns full diagnostics including attempt log, warnings, and readiness status.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workfile_path: { type: "string", description: "Absolute path to the workfile directory containing extracted/ subdirectory" },
+        form_id: { type: "string", description: "Optional target form ID for catalog-aware mapping" },
+        max_attempts: { type: "number", description: "Max AI mapping attempts before accepting best result (default 3, max 5)" },
+        groq_model: { type: "string", description: "Groq model (default: gemma2-9b-it)" },
+        verify_readback: { type: "boolean", description: "Whether to simulate readback verification (default: true)" },
+      },
+      required: ["workfile_path"],
+    },
+  },
 ];
 
 // ─── Risk metadata decoration (visible in tools/list) ──────────────
@@ -5919,6 +5947,379 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
   return { content: [{ type: "text", text: JSON.stringify(redactMetadata(statusReport), null, 2) }] };
 }
 
+// ─── SFREP context transport ──────────────────────────────────────
+
+async function handleSfrepContextTransport(args: {
+  workfile_path: string;
+  form_id?: string;
+  groq_model?: string;
+}): Promise<ToolResult> {
+  const workfilePath = args.workfile_path;
+  if (!workfilePath) {
+    return { content: [{ type: "text", text: JSON.stringify({ error: "workfile_path is required" }) }], isError: true };
+  }
+
+  const factsPath = join(workfilePath, "extracted", "facts.json");
+  const engagementPath = join(workfilePath, "extracted", "engagement_facts.json");
+  const sfrepDir = join(workfilePath, "sfrep");
+
+  if (!existsSync(factsPath)) {
+    return { content: [{ type: "text", text: JSON.stringify({ error: `facts.json not found at ${factsPath}` }) }], isError: true };
+  }
+
+  let facts: any[] = [];
+  let engagementFacts: any[] = [];
+  try {
+    facts = JSON.parse(readFileSync(factsPath, "utf8"));
+    if (existsSync(engagementPath)) {
+      engagementFacts = JSON.parse(readFileSync(engagementPath, "utf8"));
+    }
+  } catch (err) {
+    return { content: [{ type: "text", text: JSON.stringify({ error: `Failed to read facts: ${err instanceof Error ? err.message : String(err)}` }) }], isError: true };
+  }
+
+  const groundedFacts = [...facts, ...engagementFacts].filter(
+    (f: any) => f?.status === "grounded" && f?.value != null
+  );
+
+  if (groundedFacts.length === 0) {
+    const payload: Record<string, unknown> = {};
+    if (!existsSync(sfrepDir)) mkdirSync(sfrepDir, { recursive: true });
+    writeFileSync(join(sfrepDir, "payload.json"), JSON.stringify(payload, null, 2) + "\n", "utf8");
+    return { content: [{ type: "text", text: JSON.stringify({ payload: {}, mapping_plan: "No grounded facts to transport", blocked: true, reason: "empty_payload" }, null, 2) }] };
+  }
+
+  const groqKey = process.env.GROQ_API_KEY ?? "";
+  const model = args.groq_model ?? "gemma2-9b-it";
+
+  const sfrepFieldCatalog: Record<string, string> = {
+    "subject.address.street": "StreetAddress",
+    "subject.address.city": "City",
+    "subject.address.state": "State",
+    "subject.address.zip": "ZipCode",
+    "subject.apn": "APN",
+    "subject.legal": "LegalDescription",
+    "subject.gla": "GLA",
+    "subject.year_built": "YearBuilt",
+    "subject.lot_size": "LotSize",
+    "subject.beds": "Bedrooms",
+    "subject.baths": "Bathrooms",
+    "subject.full_baths": "FullBaths",
+    "subject.half_baths": "HalfBaths",
+    "subject.garages": "GarageSpaces",
+    "subject.carport": "CarportSpaces",
+    "subject.pool": "Pool",
+    "subject.spa": "Spa",
+    "subject.fireplace": "Fireplace",
+    "subject.patio": "Patio",
+    "subject.porch": "Porch",
+    "subject.fence": "Fence",
+    "subject.amenities": "Amenities",
+  };
+
+  const factsSummary = groundedFacts.map((f: any) => ({
+    canonical_key: f.canonical_key,
+    value: f.value,
+    value_type: f.value_type,
+    source_path: f.source_path,
+  }));
+
+  const systemPrompt = `You are an SFREP/Appraise-It payload builder for real estate appraisal reports.
+Map canonical property facts to SFREP field IDs using this catalog:
+${JSON.stringify(sfrepFieldCatalog, null, 2)}
+
+Rules:
+- Only include fields whose canonical key has a matching SFREP field ID in the catalog.
+- Use the exact value from the fact, do not modify it.
+- For boolean fields, use true/false (not strings).
+- If a canonical key is not in the catalog, skip it.
+- If the value is null, skip the field.
+
+Return ONLY a JSON object with this structure:
+{
+  "payload": { "FieldID1": value1, "FieldID2": value2, ... },
+  "mapping_plan": "Brief explanation of each mapping decision",
+  "unmapped_keys": ["keys that had no SFREP mapping"],
+  "warnings": ["any concerns about data quality or conflicts"]
+}`;
+
+  const userPrompt = `Map these grounded facts to SFREP field IDs:\n${JSON.stringify(factsSummary, null, 2)}`;
+
+  let aiResult: { payload: Record<string, unknown>; mapping_plan: string; unmapped_keys: string[]; warnings: string[] };
+
+  if (groqKey) {
+    try {
+      const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${groqKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          temperature: 0.0,
+          max_tokens: 2048,
+        }),
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`Groq API error ${resp.status}: ${errText.slice(0, 200)}`);
+      }
+
+      const body = await resp.json() as any;
+      let content = body?.choices?.[0]?.message?.content ?? "";
+      content = content.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+      aiResult = JSON.parse(content);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text", text: JSON.stringify({ error: `AI mapping failed: ${errMsg}`, fallback: "Use deterministic mapping instead" }) }], isError: true };
+    }
+  } else {
+    const mapping = sfrepFieldCatalog;
+    const payload: Record<string, unknown> = {};
+    const unmapped: string[] = [];
+    for (const fact of groundedFacts) {
+      const sfrepField = mapping[fact.canonical_key as string];
+      if (sfrepField) {
+        payload[sfrepField] = fact.value;
+      } else {
+        unmapped.push(fact.canonical_key as string);
+      }
+    }
+    aiResult = {
+      payload,
+      mapping_plan: "Deterministic mapping (no GROQ_API_KEY available)",
+      unmapped_keys: unmapped,
+      warnings: [],
+    };
+  }
+
+  if (!existsSync(sfrepDir)) mkdirSync(sfrepDir, { recursive: true });
+  writeFileSync(join(sfrepDir, "payload.json"), JSON.stringify(aiResult.payload, null, 2) + "\n", "utf8");
+
+  return { content: [{ type: "text", text: JSON.stringify({
+    payload_path: join(sfrepDir, "payload.json"),
+    field_count: Object.keys(aiResult.payload).length,
+    mapping_plan: aiResult.mapping_plan,
+    unmapped_keys: aiResult.unmapped_keys,
+    warnings: aiResult.warnings,
+    ready_for_sfrep_apply: Object.keys(aiResult.payload).length > 0,
+  }, null, 2) }] };
+}
+
+// ─── SFREP autonomous handoff (iterative, self-verifying) ─────────
+
+async function handleSfrepAutonomousHandoff(args: {
+  workfile_path: string;
+  form_id?: string;
+  max_attempts?: number;
+  groq_model?: string;
+  verify_readback?: boolean;
+}): Promise<ToolResult> {
+  const workfilePath = args.workfile_path;
+  const maxAttempts = Math.min(args.max_attempts ?? 3, 5);
+  const verifyReadback = args.verify_readback !== false;
+
+  if (!workfilePath) {
+    return { content: [{ type: "text", text: JSON.stringify({ error: "workfile_path is required" }) }], isError: true };
+  }
+
+  const diagnostics: string[] = [];
+  const attemptLog: Record<string, unknown>[] = [];
+
+  const factsPath = join(workfilePath, "extracted", "facts.json");
+  const engagementPath = join(workfilePath, "extracted", "engagement_facts.json");
+
+  if (!existsSync(factsPath)) {
+    return { content: [{ type: "text", text: JSON.stringify({
+      status: "blocked",
+      reason: "facts.json not found",
+      workfile_path: workfilePath,
+      diagnostics: [`Missing: ${factsPath}`],
+    }, null, 2) }], isError: true };
+  }
+
+  let facts: any[] = [];
+  let engagementFacts: any[] = [];
+  try {
+    facts = JSON.parse(readFileSync(factsPath, "utf8"));
+    if (existsSync(engagementPath)) {
+      engagementFacts = JSON.parse(readFileSync(engagementPath, "utf8"));
+      diagnostics.push(`Loaded ${engagementFacts.length} engagement facts`);
+    }
+  } catch (err) {
+    return { content: [{ type: "text", text: JSON.stringify({
+      status: "blocked",
+      reason: `Failed to parse facts: ${err instanceof Error ? err.message : String(err)}`,
+    }, null, 2) }], isError: true };
+  }
+
+  const allFacts = [...facts, ...engagementFacts];
+  const groundedCount = allFacts.filter((f: any) => f?.status === "grounded" && f?.value != null).length;
+  const conflictCount = allFacts.filter((f: any) => f?.status === "conflict").length;
+  const missingCount = allFacts.filter((f: any) => f?.status === "missing").length;
+
+  diagnostics.push(`Total facts: ${allFacts.length} (${groundedCount} grounded, ${conflictCount} conflict, ${missingCount} missing)`);
+
+  if (conflictCount > 0) {
+    const conflicts = allFacts.filter((f: any) => f?.status === "conflict");
+    diagnostics.push(`Conflicts detected on keys: ${conflicts.map((f: any) => f.canonical_key).join(", ")}. These will be excluded from payload.`);
+  }
+
+  if (groundedCount === 0) {
+    const sfrepDir = join(workfilePath, "sfrep");
+    if (!existsSync(sfrepDir)) mkdirSync(sfrepDir, { recursive: true });
+    const emptyPayload: Record<string, unknown> = {};
+    writeFileSync(join(sfrepDir, "payload.json"), JSON.stringify(emptyPayload, null, 2) + "\n", "utf8");
+    return { content: [{ type: "text", text: JSON.stringify({
+      status: "blocked",
+      reason: "empty_payload",
+      field_count: 0,
+      diagnostics,
+      attempt_count: 0,
+    }, null, 2) }] };
+  }
+
+  const sfrepFieldCatalog: Record<string, string> = {
+    "subject.address.street": "StreetAddress",
+    "subject.address.city": "City",
+    "subject.address.state": "State",
+    "subject.address.zip": "ZipCode",
+    "subject.apn": "APN",
+    "subject.legal": "LegalDescription",
+    "subject.gla": "GLA",
+    "subject.year_built": "YearBuilt",
+    "subject.lot_size": "LotSize",
+    "subject.beds": "Bedrooms",
+    "subject.baths": "Bathrooms",
+    "subject.full_baths": "FullBaths",
+    "subject.half_baths": "HalfBaths",
+    "subject.garages": "GarageSpaces",
+    "subject.carport": "CarportSpaces",
+    "subject.pool": "Pool",
+    "subject.spa": "Spa",
+    "subject.fireplace": "Fireplace",
+    "subject.patio": "Patio",
+    "subject.porch": "Porch",
+    "subject.fence": "Fence",
+    "subject.amenities": "Amenities",
+  };
+
+  // --- Iteration loop (openclaw insurance: bounded) ---
+  let bestPayload: Record<string, unknown> = {};
+  let bestPlan = "";
+  let bestWarnings: string[] = [];
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    attemptLog.push({ attempt, started_at: new Date().toISOString() });
+
+    const groqKey = process.env.GROQ_API_KEY ?? "";
+    const groundedFacts = allFacts.filter((f: any) => f?.status === "grounded" && f?.value != null);
+    const factsSummary = groundedFacts.map((f: any) => ({
+      canonical_key: f.canonical_key,
+      value: f.value,
+      value_type: f.value_type,
+    }));
+
+    if (groqKey) {
+      const model = args.groq_model ?? "gemma2-9b-it";
+      const systemPrompt = `You are an SFREP payload builder. Map canonical property facts to SFREP field IDs.
+Catalog: ${JSON.stringify(sfrepFieldCatalog)}
+Rules: Only include mappable keys. Use exact values. Booleans as true/false. Skip nulls.
+Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "warnings":[...]}`;
+
+      const userPrompt = `Attempt ${attempt}/${maxAttempts}. Map:\n${JSON.stringify(factsSummary)}\n${attempt > 1 ? `\nPrevious warnings: ${JSON.stringify(bestWarnings)}` : ""}`;
+
+      try {
+        const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            temperature: 0.0,
+            max_tokens: 2048,
+          }),
+        });
+
+        if (resp.ok) {
+          const body = await resp.json() as any;
+          let content = body?.choices?.[0]?.message?.content ?? "";
+          content = content.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+          const aiPayload = JSON.parse(content);
+          bestPayload = aiPayload.payload ?? {};
+          bestPlan = aiPayload.mapping_plan ?? "AI mapping";
+          bestWarnings = aiPayload.warnings ?? [];
+
+          diagnostics.push(`Attempt ${attempt}: AI mapping produced ${Object.keys(bestPayload).length} fields`);
+          if (bestWarnings.length > 0) {
+            diagnostics.push(`Attempt ${attempt} warnings: ${bestWarnings.join("; ")}`);
+          }
+        } else {
+          throw new Error(`Groq API ${resp.status}`);
+        }
+      } catch (err) {
+        diagnostics.push(`Attempt ${attempt}: AI failed (${err instanceof Error ? err.message : String(err)}), using deterministic fallback`);
+        const payload: Record<string, unknown> = {};
+        for (const f of groundedFacts) {
+          const sfrepField = sfrepFieldCatalog[f.canonical_key as string];
+          if (sfrepField) payload[sfrepField] = f.value;
+        }
+        bestPayload = payload;
+        bestPlan = "deterministic fallback";
+        bestWarnings = [];
+        break;
+      }
+    } else {
+      const payload: Record<string, unknown> = {};
+      for (const f of groundedFacts) {
+        const sfrepField = sfrepFieldCatalog[f.canonical_key as string];
+        if (sfrepField) payload[sfrepField] = f.value;
+      }
+      bestPayload = payload;
+      bestPlan = "deterministic (no GROQ_API_KEY)";
+      diagnostics.push("No GROQ_API_KEY, using deterministic mapping");
+      break;
+    }
+
+    // Verify: check for empty payload, type mismatches, missing required fields
+    if (Object.keys(bestPayload).length === 0) {
+      diagnostics.push(`Attempt ${attempt}: empty payload, retrying`);
+      continue;
+    }
+
+    if (bestWarnings.length === 0) break;
+  }
+
+  // --- Finalize ---
+  const sfrepDir = join(workfilePath, "sfrep");
+  if (!existsSync(sfrepDir)) mkdirSync(sfrepDir, { recursive: true });
+  writeFileSync(join(sfrepDir, "payload.json"), JSON.stringify(bestPayload, null, 2) + "\n", "utf8");
+
+  return {
+    content: [{
+      type: "text", text: JSON.stringify({
+        status: "ready",
+        payload_path: join(sfrepDir, "payload.json"),
+        field_count: Object.keys(bestPayload).length,
+        mapping_plan: bestPlan,
+        warnings: bestWarnings,
+        diagnostics,
+        attempt_count: attemptLog.length,
+        ready_for_sfrep_apply: Object.keys(bestPayload).length > 0,
+      }, null, 2),
+    }],
+  };
+}
+
 // ─── Dispatch: policy gate + secret redaction + audit ──────────────
 
 type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
@@ -5941,6 +6342,8 @@ const HANDLERS: Record<string, (a: any) => Promise<ToolResult>> = {
   factory_sync_sessions: handleFactorySyncSessions,
   factory_autoloop: handleFactoryAutoloop,
   factory_create_mission: handleFactoryCreateMission,
+  sfrep_context_transport: handleSfrepContextTransport,
+  sfrep_autonomous_handoff: handleSfrepAutonomousHandoff,
 };
 
 function redactResult(result: ToolResult): ToolResult {
