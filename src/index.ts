@@ -3066,6 +3066,24 @@ function classifyOnlineWorkflowStep(
   }
 
   if (sessionHint) {
+    // If the action is clearly read-only and only matched a generic portal
+    // surface (not a specific named portal like "gmail" or "taxnetusa"),
+    // treat it as headless-safe rather than session-bound. For example
+    // "list_recent_sessions" is a read-only Factory API read, not a browser step.
+    const isGenericPortalOnly = portalSurface === "portal_generic"
+      || (portalSurface !== null && !/gmail|matrix_mls|taxnetusa|county_cad|comet_browser|sharepoint_onedrive/.test(portalSurface));
+    if (readOnlyHint && isGenericPortalOnly && !blockedMissingCapability) {
+      return {
+        is_online_workflow: true,
+        portal_surface: normalizedSurface,
+        execution_classification: "headless-safe",
+        classification_reason: "headless-safe read/research step (no specific actionable portal surface)",
+        missing_prerequisites: [],
+        auth_session_needs: [],
+        blocked_missing_capability: false,
+        requires_local_task: false,
+      };
+    }
     return {
       is_online_workflow: true,
       portal_surface: normalizedSurface,
