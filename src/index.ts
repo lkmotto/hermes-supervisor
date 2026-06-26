@@ -6402,6 +6402,20 @@ Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "war
         bestWarnings = [];
         break;
       }
+    } else {
+      // No AI response available (both Ollama and Groq unreachable or missing keys).
+      // Fall back to deterministic catalog mapping immediately — do not waste
+      // retry iterations on an empty AI path that can never produce content.
+      diagnostics.push(`Attempt ${attempt}: no AI response available, using deterministic fallback`);
+      const payload: Record<string, unknown> = {};
+      for (const f of groundedFacts) {
+        const sfrepField = sfrepFieldCatalog[f.canonical_key as string];
+        if (sfrepField) payload[sfrepField] = f.value;
+      }
+      bestPayload = payload;
+      bestPlan = "deterministic fallback (no AI)";
+      bestWarnings = [];
+      break;
     }
 
     // Verify: check for empty payload, type mismatches, missing required fields
