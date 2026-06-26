@@ -1355,6 +1355,9 @@ async function testValOrch012_DangerousMutationsBlockedWithApprovalRouting() {
 async function testValOrch015_OnlineBlockerCapabilityRequestsDeduplicatedByBlockerKey() {
   console.log("\n=== Test: VAL-ORCH-015 Online blocker capability requests deduplicated by blocker key ===");
   const correlationId = generateCorrelationId();
+  const nonce = Date.now();
+  const sharedTaxnetPrereq = `taxnetusa_authenticated_session_val_orch_015_${nonce}`;
+  const gmailPrereq = `gmail_authenticated_session_val_orch_015_${nonce}`;
 
   // Submit multiple actions targeting the same portal with the same blocker context
   const result = await callTool("business_pm_loop", {
@@ -1366,28 +1369,28 @@ async function testValOrch015_OnlineBlockerCapabilityRequestsDeduplicatedByBlock
         type: "submit portal form",
         description: "Submit TaxNetUSA form A via authenticated browser",
         portal: "taxnetusa",
-        missing_prerequisites: ["taxnetusa_authenticated_session"],
+        missing_prerequisites: [sharedTaxnetPrereq],
       },
       {
         action: "submit_taxnet_form_b",
         type: "submit portal form",
         description: "Submit TaxNetUSA form B via authenticated browser",
         portal: "taxnetusa",
-        missing_prerequisites: ["taxnetusa_authenticated_session"],
+        missing_prerequisites: [sharedTaxnetPrereq],
       },
       {
         action: "submit_taxnet_form_c",
         type: "submit portal form",
         description: "Submit TaxNetUSA form C via authenticated browser",
         portal: "taxnetusa",
-        missing_prerequisites: ["taxnetusa_authenticated_session"],
+        missing_prerequisites: [sharedTaxnetPrereq],
       },
       {
         action: "check_gmail_missing_auth",
         type: "check portal",
         description: "Check Gmail for updates — missing auth",
         portal: "gmail",
-        missing_prerequisites: ["gmail_authenticated_session"],
+        missing_prerequisites: [gmailPrereq],
       },
     ],
   });
