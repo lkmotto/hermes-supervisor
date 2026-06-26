@@ -1944,14 +1944,27 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
   const result = await perplexityResearch(query);
   const planText = result.choices?.[0]?.message?.content ?? "Plan generation failed";
 
+  // Extract structured evidence for policy gating and audit
+  const citationUrls = extractCitationUrls(planText);
+  const extractedConfidence = extractConfidenceScore(planText);
+  const confidenceScore = extractedConfidence ?? 0.5; // default medium confidence
+  const confidenceLabel = confidenceScore >= 0.8 ? "high" : confidenceScore >= 0.5 ? "medium" : "low";
+
   const planRecord = redactSecrets(`## Plan: ${args.goal}\n\n${planText}`);
   const stored = storeTypedMemoryRecord({
     category: "project",
     content: planRecord,
-    metadata: { goal: args.goal, context: args.context ?? "", generated_by: "plan_tool" },
+    metadata: {
+      goal: args.goal,
+      context: args.context ?? "",
+      generated_by: "plan_tool",
+      citation_urls: citationUrls,
+      confidence_score: confidenceScore,
+      confidence: confidenceLabel,
+    },
     trace: {
       source: "plan_tool",
-      confidence: "medium",
+      confidence: confidenceLabel,
     },
   });
 
