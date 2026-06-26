@@ -2008,7 +2008,14 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     const message = "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
     queueFleetRetry("cycle_preflight", correlationId, null, message);
     return {
-      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: message }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({
+        status: "degraded",
+        correlation_id: correlationId,
+        reason: message,
+        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
+          .filter((retry) => retry.correlation_id === correlationId),
+      }, null, 2) }],
       isError: true,
     };
   }
@@ -2018,7 +2025,14 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   } catch (error) {
     queueFleetRetry("register_agent", correlationId, null, error);
     return {
-      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: "Failed to register Hermes with fleet." }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({
+        status: "degraded",
+        correlation_id: correlationId,
+        reason: "Failed to register Hermes with fleet.",
+        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
+          .filter((retry) => retry.correlation_id === correlationId),
+      }, null, 2) }],
       isError: true,
     };
   }
@@ -2054,7 +2068,14 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   } catch (error) {
     queueFleetRetry("record_run_start", correlationId, null, error);
     return {
-      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: "Failed to start fleet run." }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({
+        status: "degraded",
+        correlation_id: correlationId,
+        reason: "Failed to start fleet run.",
+        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
+          .filter((retry) => retry.correlation_id === correlationId),
+      }, null, 2) }],
       isError: true,
     };
   }
@@ -3340,7 +3361,14 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     const message = "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
     queueFleetRetry("cycle_preflight", correlationId, null, message);
     return {
-      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: message }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({
+        status: "degraded",
+        correlation_id: correlationId,
+        reason: message,
+        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
+          .filter((retry) => retry.correlation_id === correlationId),
+      }, null, 2) }],
       isError: true,
     };
   }
@@ -3350,7 +3378,14 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   } catch (error) {
     queueFleetRetry("register_agent", correlationId, null, error);
     return {
-      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: "Failed to register Hermes with fleet." }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({
+        status: "degraded",
+        correlation_id: correlationId,
+        reason: "Failed to register Hermes with fleet.",
+        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
+          .filter((retry) => retry.correlation_id === correlationId),
+      }, null, 2) }],
       isError: true,
     };
   }
@@ -3378,7 +3413,14 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   } catch (error) {
     queueFleetRetry("record_run_start", correlationId, null, error);
     return {
-      content: [{ type: "text", text: JSON.stringify({ status: "degraded", correlation_id: correlationId, reason: "Failed to start fleet run." }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({
+        status: "degraded",
+        correlation_id: correlationId,
+        reason: "Failed to start fleet run.",
+        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
+        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
+          .filter((retry) => retry.correlation_id === correlationId),
+      }, null, 2) }],
       isError: true,
     };
   }
