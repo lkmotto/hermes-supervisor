@@ -3121,15 +3121,26 @@ function classifyOnlineWorkflowStep(
   };
 }
 
+function escapeLikeLiteral(value: string): string {
+  // Escape SQLite LIKE metacharacters using \ as the escape character
+  // (when used with ESCAPE '\' clause). Order matters: escape \ first
+  // so the escape char itself doesn't interfere with later replacements.
+  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
 function capabilityGapByBlockerKey(blockerKey: string): { memory_id: string | null; request_id: string | null } | null {
   try {
-    // Use exact JSON substring match rather than LIKE with unescaped wildcards.
-    // LIKE treats _ as single-char wildcard; field names like blocker_key need escaping.
+    // Use LIKE with ESCAPE '\' so \ becomes the escape character.
+    // Without ESCAPE, SQLite treats \ as a plain character and _ as a
+    // single-character wildcard, making \\_ ineffective for matching the
+    // literal underscore in field name "blocker_key".
+    // With ESCAPE, \\_ matches literal underscore and the blockerKey
+    // value is also escaped against %, _, and \ metacharacters.
     const stmt = db.prepare(
-      "SELECT id, metadata FROM memories WHERE category = 'capability_gap' AND metadata LIKE ? ORDER BY created_at DESC LIMIT 1",
+      "SELECT id, metadata FROM memories WHERE category = 'capability_gap' AND metadata LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT 1",
     );
-    // Escape SQL LIKE wildcards (_ %) in the literal pattern portion (not the user-supplied key).
-    stmt.bind([`%\"blocker\\_key\":\"${blockerKey}\"%`]);
+    const escapedKey = escapeLikeLiteral(blockerKey);
+    stmt.bind([`%\"blocker\\_key\":\"${escapedKey}\"%`]);
     if (!stmt.step()) {
       stmt.free();
       return null;

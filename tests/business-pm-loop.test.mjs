@@ -1449,6 +1449,82 @@ async function testValOrch015_OnlineBlockerCapabilityRequestsDeduplicatedByBlock
   console.log(`  PASS: ${taxnetRequests.length} TaxNetUSA requests: ${taxnetPending.length} new + ${taxnetReused.length} reused; Gmail: ${gmailPending.length} new. Deduplication works by blocker key.`);
 }
 
+// ─── VAL-ORCH-015 cross-cycle: repeated identical blocker contexts reuse existing requests ───
+
+async function testValOrch015_CrossCycleBlockerKeyDeduplication() {
+  console.log("\n=== Test: VAL-ORCH-015 cross-cycle blocker key deduplication ===");
+  const firstCorrelationId = generateCorrelationId();
+  const secondCorrelationId = generateCorrelationId();
+
+  // Use a distinct blocker context to avoid interference with other tests
+  const sharedPrereq = `cross_cycle_test_session_${Date.now()}`;
+  const actionPayload = {
+    action: "cross_cycle_collect_taxnet_data",
+    type: "TaxNetUSA browser session workflow",
+    description: "Cross-cycle dedup test: TaxNet lookup blocked because session is missing",
+    portal: "taxnetusa",
+    missing_prerequisites: [sharedPrereq],
+  };
+
+  // First cycle: create a new capability request
+  const first = await callTool("business_pm_loop", {
+    objective: `Cross-cycle dedup test run 1 [${firstCorrelationId}]`,
+    correlation_id: firstCorrelationId,
+    proposed_actions: [actionPayload],
+  });
+  const firstReqs = first.propose?.capability_requests || [];
+  const firstOnlineReq = firstReqs.find((req) =>
+    String(req.source || "").includes("online_portal_prerequisite"));
+  assert(firstOnlineReq, "First cycle should create an online portal prerequisite request");
+  assert(firstOnlineReq.status === "pending",
+    `First cycle request should be "pending", got "${firstOnlineReq.status}"`);
+  assertHasField(firstOnlineReq, "blocker_key", "first cycle request");
+  assertHasField(firstOnlineReq, "request_id", "first cycle request");
+
+  const firstBlockerKey = firstOnlineReq.blocker_key;
+  const firstRequestId = firstOnlineReq.request_id;
+
+  // Verify the capability_gap memory was persisted with the correct blocker_key
+  const capabilityGaps = await callTool("memory_recall", {
+    category: "capability_gap",
+    query: firstCorrelationId,
+    limit: 20,
+  });
+  const gapRows = Array.isArray(capabilityGaps) ? capabilityGaps : [];
+  const matchGap = gapRows.find((r) => {
+    const meta = r.metadata || {};
+    return typeof meta.blocker_key === "string" && meta.blocker_key === firstBlockerKey;
+  });
+  assert(matchGap, "First cycle capability_gap record should be persisted with matching blocker_key");
+  assert(typeof matchGap.metadata?.capability_request_id === "string",
+    "Capability_gap metadata should include capability_request_id");
+
+  // Second cycle: same blocker context should reuse the existing request from memory
+  const second = await callTool("business_pm_loop", {
+    objective: `Cross-cycle dedup test run 2 [${secondCorrelationId}]`,
+    correlation_id: secondCorrelationId,
+    proposed_actions: [actionPayload],
+  });
+  const secondReqs = second.propose?.capability_requests || [];
+  const secondOnlineReq = secondReqs.find((req) =>
+    String(req.source || "").includes("online_portal_prerequisite"));
+  assert(secondOnlineReq, "Second cycle should include an online portal prerequisite record");
+
+  // The second request should either be reused or carry the same blocker_key and request_id
+  const isReused = String(secondOnlineReq.source || "").includes("reused")
+    || secondOnlineReq.status === "reused_existing";
+  const sameIds = secondOnlineReq.request_id === firstRequestId
+    && secondOnlineReq.blocker_key === firstBlockerKey;
+  assert(isReused || sameIds,
+    `Cross-cycle dedup: second cycle should reuse or match first. source=${secondOnlineReq.source}, status=${secondOnlineReq.status}, ids_match=${sameIds}`);
+
+  // Verify the blocker_key is identical across cycles
+  assert(secondOnlineReq.blocker_key === firstBlockerKey,
+    `Cross-cycle blocker_key should match: ${secondOnlineReq.blocker_key} vs ${firstBlockerKey}`);
+
+  console.log(`  PASS: Cross-cycle deduplication: second cycle ${isReused ? "reused_existing" : "matched"} first cycle's capability request (blocker_key=${firstBlockerKey}, request_id=${firstRequestId})`);
+}
+
 // ─── Run all tests ──────────────────────────────────────────────────
 
 async function main() {
@@ -1494,6 +1570,7 @@ async function main() {
     testValOrch011_SessionBoundOnlineStepsRouteToLocalTaskQueue,
     testValOrch012_DangerousMutationsBlockedWithApprovalRouting,
     testValOrch015_OnlineBlockerCapabilityRequestsDeduplicatedByBlockerKey,
+    testValOrch015_CrossCycleBlockerKeyDeduplication,
     testValCore008_FailClosedWithoutConfirmation,
     testValCore009_NonHermesMutationNeedsApproval,
     testValCore010_HermesScopedMutationNeedsValidationAndApproval,
