@@ -6109,9 +6109,95 @@ async function scanWorkfiles(): Promise<string[]> {
   return found;
 }
 
+// ─── Cross-machine session memory ─────────────────────────────────
+
+const CROSS_MEMORY_CATEGORY = "session";
+const CROSS_MEMORY_PREFIX = "factory_session:";
+
+async function syncCrossMachineMemory(): Promise<void> {
+  try {
+    // List recent sessions from Factory
+    const sessions = await listSessions(20);
+    if (!sessions.length) return;
+
+    // Query already-processed session IDs from Hermes memory
+    const stmt = db.prepare("SELECT content FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT 100");
+    stmt.bind([CROSS_MEMORY_CATEGORY, `${CROSS_MEMORY_PREFIX}%`]);
+    const processedIds = new Set<string>();
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      const content = String(row.content ?? "");
+      const match = content.match(/factory_session:([^\s]+)/);
+      if (match) processedIds.add(match[1]);
+    }
+    stmt.free();
+
+    // Process new sessions
+    let newCount = 0;
+    for (const session of sessions) {
+      const sid = session.id || session.sessionId;
+      if (!sid || processedIds.has(sid)) continue;
+
+      try {
+        const msgs = await getSessionMessages(sid, 30);
+        if (!msgs.length) continue;
+
+        // Extract key info from messages
+        const userMsgs = msgs.filter(m => m.role === "user").map(m => m.content?.trim()).filter(Boolean);
+        const assistantMsgs = msgs.filter(m => m.role === "assistant").map(m => m.content?.slice(0, 500)).filter(Boolean);
+        const fileMentions = [...assistantMsgs.join(" ").matchAll(/[A-Z]:\\[^\s"']+|\/[^\s"']+/g)].map(m => m[0]).slice(0, 10);
+        const taskSummary = userMsgs.slice(0, 3).map(m => m.length > 200 ? m.slice(0, 200) + "..." : m).join(" | ");
+
+        let summary: string;
+        try {
+          const ollamaResult = await ollamaChat(
+            "You are a session summarizer. Respond with ONLY bullet points, no intro text.",
+            `Summarize this Droid session in 3-5 bullet points. Include: main task, tools used, files created/modified, errors encountered, outcome.\n\nSession messages (truncated):\n${taskSummary}`,
+          );
+          summary = ollamaResult || taskSummary;
+        } catch {
+          summary = taskSummary;
+        }
+
+        storeTypedMemoryRecord({
+          category: CROSS_MEMORY_CATEGORY,
+          content: `${CROSS_MEMORY_PREFIX}${sid} | device: ${session.computerId ?? "unknown"} | ${summary}`,
+          metadata: {
+            sessionId: sid,
+            computerId: session.computerId,
+            messageCount: msgs.length,
+            fileMentions,
+            timestamp: nowIso(),
+          },
+          trace: { source: "cross_machine_memory", correlationId: `mem-${sid}`, timestamp: nowIso() },
+        });
+
+        newCount++;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("not found") && !msg.includes("404")) {
+          console.error(`[memory] Failed to process session ${sid}: ${msg}`);
+        }
+      }
+    }
+
+    if (newCount > 0) {
+      console.error(`[memory] Stored ${newCount} new session summary(s)`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("not configured")) {
+      console.error(`[memory] Cross-machine memory sync error: ${msg}`);
+    }
+  }
+}
+
 async function autonomousTick(): Promise<void> {
   const correlationId = `auto-${Date.now()}`;
   try {
+    // Cross-machine session memory sync
+    await syncCrossMachineMemory();
+    // SFREP workfile scanning
     const workfiles = await scanWorkfiles();
     if (workfiles.length === 0) return;
 
