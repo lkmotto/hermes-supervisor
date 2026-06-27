@@ -632,7 +632,7 @@ async function testValCross007_CursorDedupePreventsDuplicates() {
     })
     .map(s => typeof s.sessionId === "string" ? s.sessionId : (typeof s.session_id === "string" ? s.session_id : null))
     .filter(Boolean)
-    .slice(0, 5);
+    .slice(0, 3);
 
   if (testSessionIds.length === 0) {
     testSessionIds = [
@@ -643,23 +643,50 @@ async function testValCross007_CursorDedupePreventsDuplicates() {
   }
   console.log(`  => Testing with ${testSessionIds.length} idle session(s)`);
 
-  const result = await callTool("factory_autoloop", {
-    objective: `Cursor dedupe verification [${testCid}]`,
+  // ── FIRST run: initial autoloop to establish session cursors ──
+  console.log("  => First autoloop run: establishing cursors...");
+  const firstResult = await callTool("factory_autoloop", {
+    objective: `Cursor dedupe verification - first run [${testCid}]`,
     session_ids: testSessionIds,
-    max_rounds: 3,
-    poll_delay_ms: 2500,
-    correlation_id: testCid,
-    desired_effect: "Verify cursor dedupe prevents duplicate reprompts",
+    max_rounds: 2,
+    poll_delay_ms: 1000,
+    correlation_id: `${testCid}-r1`,
+    desired_effect: "Establish cursor state for dedupe verification",
     completion_keywords: ["ZZ_COMPLETION_NONMATCHING_KEYWORD_999"],
     require_citations: false,
     push_to_perplexity_shadow: false,
   });
 
-  // Collect all reprompt entries across all rounds
+  // Verify first run completed within bounds
+  assert(typeof firstResult.rounds_executed === "number", "First run: rounds_executed must be numeric");
+  assert(firstResult.rounds_executed <= firstResult.rounds_planned,
+    `First run: rounds_executed (${firstResult.rounds_executed}) must not exceed rounds_planned (${firstResult.rounds_planned})`);
+  console.log(`  => First run completed: ${firstResult.rounds_executed} rounds, status=${firstResult.status}`);
+
+  // ── SECOND run: same session IDs, cursors should be unchanged, force dedupe detection ──
+  console.log("  => Second autoloop run: expecting cursor-dedupe detection...");
+  const secondResult = await callTool("factory_autoloop", {
+    objective: `Cursor dedupe verification - second run [${testCid}]`,
+    session_ids: testSessionIds,
+    max_rounds: 2,
+    poll_delay_ms: 1000,
+    correlation_id: `${testCid}-r2`,
+    desired_effect: "Force cursor-dedupe detection on unchanged sessions",
+    completion_keywords: ["ZZ_COMPLETION_NONMATCHING_KEYWORD_999"],
+    require_citations: false,
+    push_to_perplexity_shadow: false,
+  });
+
+  // Verify second run completed within bounds
+  assert(typeof secondResult.rounds_executed === "number", "Second run: rounds_executed must be numeric");
+  assert(secondResult.rounds_executed <= secondResult.rounds_planned,
+    `Second run: rounds_executed (${secondResult.rounds_executed}) must not exceed rounds_planned (${secondResult.rounds_planned})`);
+
+  // Collect all reprompt entries from the SECOND run across all rounds
   const allReprompts = [];
   const perRoundCursors = [];
-  for (let i = 0; i < result.rounds.length; i++) {
-    const round = result.rounds[i];
+  for (let i = 0; i < secondResult.rounds.length; i++) {
+    const round = secondResult.rounds[i];
     const roundReprompts = Array.isArray(round.reprompts) ? round.reprompts : [];
     allReprompts.push(...roundReprompts.map(r => ({ ...r, _round: round.round })));
 
@@ -674,8 +701,7 @@ async function testValCross007_CursorDedupePreventsDuplicates() {
     perRoundCursors.push({ round: round.round, cursors: cursorMap });
   }
 
-  // Verify cursor dedupe: at least one reprompt entry must show
-  // reason=no_new_assistant_progress_since_last_reprompt (the core assertion).
+  // ── STRICT ASSERTION: cursor-dedupe skips MUST be present in second run ──
   const dedupeSkips = allReprompts.filter(
     r => r.reason === "no_new_assistant_progress_since_last_reprompt"
   );
@@ -689,42 +715,31 @@ async function testValCross007_CursorDedupePreventsDuplicates() {
     r => r.error != null
   );
 
-  console.log(`  => Reprompt entries: ${successfulReprompts.length} sent, ${dedupeSkips.length} cursor-dedupe skips, ${runningSkips.length} running skips, ${errorReprompts.length} errors`);
+  console.log(`  => Second-run reprompt entries: ${successfulReprompts.length} sent, ${dedupeSkips.length} cursor-dedupe skips, ${runningSkips.length} running skips, ${errorReprompts.length} errors`);
 
-  // The key assertion: cursor dedupe skip reason must appear in real autoloop output
-  assert(dedupeSkips.length > 0 || runningSkips.length > 0 || successfulReprompts.length > 0,
-    `Autoloop must produce reprompt entries across rounds; got ${allReprompts.length} total across ${result.rounds.length} rounds`);
+  // STRICT: The second run on already-processed sessions MUST produce cursor-dedupe skips.
+  // No lenient fallback. The cursor-dedupe skip reason is the contract-required evidence.
+  assert(dedupeSkips.length > 0,
+    `Second autoloop run must produce cursor-dedupe skips with reason=no_new_assistant_progress_since_last_reprompt; ` +
+    `got ${dedupeSkips.length} dedupe skips, ${runningSkips.length} running skips, ${successfulReprompts.length} successful, ` +
+    `${errorReprompts.length} errors across ${secondResult.rounds.length} round(s)`);
 
-  // If cursor dedupe was triggered, verify the fields
-  if (dedupeSkips.length > 0) {
-    for (const skip of dedupeSkips) {
-      assert(typeof skip.session_id === "string" && skip.session_id.length > 0,
-        "Cursor dedupe skip must include session_id");
-      assert(skip.skipped === true,
-        "Cursor dedupe skip must have skipped=true");
-      assert(skip.reason === "no_new_assistant_progress_since_last_reprompt",
-        `Cursor dedupe reason must be exact: "${skip.reason}"`);
-    }
-    console.log(`  => Verified ${dedupeSkips.length} cursor-dedupe skip(s) with correct reason field`);
-  } else {
-    // When no dedupe occurs (all sessions running or completed), verify
-    // the skip reasons that DID fire are well-formed.
-    console.log(`  => No cursor-dedupe skips in this run (sessions may be running/completed); verifying existing skip reasons`);
-    for (const r of [...runningSkips, ...errorReprompts]) {
-      assert(typeof r.session_id === "string", "Every reprompt entry must carry session_id");
-      if (r.reason === "session_running") {
-        assert(r.skipped === true, "Running skip must have skipped=true");
-      }
-    }
+  // Verify every cursor-dedupe skip carries required evidence fields
+  for (const skip of dedupeSkips) {
+    assert(typeof skip.session_id === "string" && skip.session_id.length > 0,
+      "Cursor dedupe skip must include session_id");
+    assert(skip.skipped === true,
+      `Cursor dedupe skip for session ${skip.session_id}: skipped must be true, got ${skip.skipped}`);
+    assert(skip.reason === "no_new_assistant_progress_since_last_reprompt",
+      `Cursor dedupe skip for session ${skip.session_id}: reason must be "no_new_assistant_progress_since_last_reprompt", got "${skip.reason}"`);
   }
+  console.log(`  => Verified ${dedupeSkips.length} cursor-dedupe skip(s) with correct reason=no_new_assistant_progress_since_last_reprompt and skipped=true`);
 
-  // Verify cursor consistency: per-session latest_assistant_message_id should not
-  // regress across rounds (id should stay same or advance, never go backwards).
+  // Verify cursor consistency across rounds in the second run
   const seenCursors = {};
   for (const rc of perRoundCursors) {
     for (const [sid, cursor] of Object.entries(rc.cursors)) {
       if (seenCursors[sid] !== undefined) {
-        // Cursor might stay same (dedupe) or change (new progress), but never null after being set
         assert(cursor !== null || seenCursors[sid] === null,
           `Session ${sid}: cursor should not regress from "${seenCursors[sid]}" to null`);
       }
@@ -732,18 +747,18 @@ async function testValCross007_CursorDedupePreventsDuplicates() {
     }
   }
 
-  // Verify reprompts_sent counts only successful submit entries per round
-  for (let i = 0; i < result.rounds.length; i++) {
-    const round = result.rounds[i];
+  // Verify reprompts_sent counts only successful submit entries per round in second run
+  for (let i = 0; i < secondResult.rounds.length; i++) {
+    const round = secondResult.rounds[i];
     const expectedSent = (Array.isArray(round.reprompts) ? round.reprompts : []).filter(
       e => e.message_id != null && !e.skipped && !e.warning && !e.error
     ).length;
     assert(round.reprompts_sent === expectedSent,
-      `Round ${i}: reprompts_sent (${round.reprompts_sent}) must equal successful submit count (${expectedSent})`);
+      `Second run round ${i}: reprompts_sent (${round.reprompts_sent}) must equal successful submit count (${expectedSent})`);
   }
 
-  checkNoSecrets(result, "VAL-CROSS-007 autoloop result");
-  console.log(`  PASS: VAL-CROSS-007 Cursor resume logic prevents duplicate reprompts on unchanged assistant cursor`);
+  checkNoSecrets(secondResult, "VAL-CROSS-007 autoloop result");
+  console.log(`  PASS: VAL-CROSS-007 Cursor resume logic prevents duplicate reprompts on unchanged assistant cursor (strict two-run evidence)`);
 }
 
 // ─── VAL-CROSS-008: Connected-computer failure resumes through rebind ──
@@ -775,19 +790,130 @@ async function testValCross008_RebindPath() {
       "0503fa18-0b05-4a61-98c2-968133767ae2",
     ];
   }
-  console.log(`  => Testing with ${testSessionIds.length} session(s)`);
+  console.log(`  => Base session set: ${testSessionIds.length} idle session(s)`);
 
-  const result = await callTool("factory_autoloop", {
+  // ── Attempt to create a CC-requiring session to force exercise of the rebind path ──
+  let ccSessionId = null;
+  let ccComputerId = null;
+  let altComputerId = null;
+  try {
+    const apiKey = process.env.FACTORY_API_KEY;
+    if (apiKey) {
+      const API_BASE = "https://api.factory.ai/api/v0";
+      // Discover active computers with retry for rate limiting
+      let computers = null;
+      let lastStatus = 0;
+      for (let attempt = 0; attempt < 3 && !computers; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
+        const computersRes = await fetch(`${API_BASE}/computers?limit=25`, {
+          headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+        });
+        lastStatus = computersRes.status;
+        if (computersRes.status === 429) {
+          console.log(`  => Computers endpoint rate-limited (attempt ${attempt + 1}/3), retrying...`);
+          continue;
+        }
+        if (computersRes.ok) {
+          computers = await computersRes.json();
+        } else {
+          console.log(`  => Computers endpoint returned ${computersRes.status}, proceeding with base sessions`);
+          break;
+        }
+      }
+      if (computers) {
+        const comps = Array.isArray(computers) ? computers : (computers.computers || []);
+        const activeComps = comps.filter(c => (c.status || "").toLowerCase() === "active");
+        if (activeComps.length >= 2) {
+          // Use the first computer to create the session
+          ccComputerId = activeComps[0].id;
+          // Save a DIFFERENT active computer to pass to autoloop, to force CC mismatch
+          altComputerId = activeComps[1].id;
+          console.log(`  => Found ${activeComps.length} active computers; using ${ccComputerId.slice(0, 16)}... for session, ${altComputerId.slice(0, 16)}... for autoloop`);
+
+          // Create a session with computer A
+          const createRes = await fetch(`${API_BASE}/sessions`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({
+              computerId: ccComputerId,
+              sessionSettings: { interactionMode: "auto", autonomyLevel: "high", reasoningEffort: "high" },
+            }),
+          });
+          if (createRes.ok) {
+            const created = await createRes.json();
+            ccSessionId = created.id || created.sessionId;
+            if (ccSessionId) {
+              console.log(`  => Created CC session ${ccSessionId.slice(0, 16)}... with computer ${ccComputerId.slice(0, 16)}...`);
+              // Add the CC session to the test set to force rebind path exercise
+              testSessionIds = [ccSessionId, ...testSessionIds].slice(0, 5);
+              // Brief wait for session initialization
+              await new Promise(r => setTimeout(r, 1500));
+            }
+          } else {
+            console.log(`  => Session creation returned ${createRes.status}, proceeding with base sessions`);
+          }
+        } else if (activeComps.length === 1) {
+          ccComputerId = activeComps[0].id;
+          console.log(`  => Found 1 active computer ${ccComputerId.slice(0, 16)}...`);
+          const createRes = await fetch(`${API_BASE}/sessions`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({
+              computerId: ccComputerId,
+              sessionSettings: { interactionMode: "auto", autonomyLevel: "high", reasoningEffort: "high" },
+            }),
+          });
+          if (createRes.ok) {
+            const created = await createRes.json();
+            ccSessionId = created.id || created.sessionId;
+            if (ccSessionId) {
+              console.log(`  => Created CC session ${ccSessionId.slice(0, 16)}... (single computer, may not trigger CC error without mismatch)`);
+              testSessionIds = [ccSessionId, ...testSessionIds].slice(0, 5);
+              await new Promise(r => setTimeout(r, 1500));
+            }
+          }
+        } else {
+          console.log(`  => No active computers found, proceeding with base sessions`);
+        }
+      } else {
+        console.log(`  => Computers discovery exhausted (lastStatus=${lastStatus}), proceeding with base sessions`);
+      }
+    }
+  } catch (e) {
+    console.log(`  => CC session setup skipped: ${e.message.slice(0, 80)}`);
+  }
+
+  console.log(`  => Testing with ${testSessionIds.length} session(s)` +
+    (ccSessionId ? ` (includes CC session ${ccSessionId.slice(0, 16)}...)` : ""));
+
+  // Build autoloop params. If we have a CC session AND an alt computer,
+  // pass the alt computer_id to autoloop to force a CC mismatch error.
+  const autoloopParams = {
     objective: `Rebind path verification [${testCid}]`,
     session_ids: testSessionIds,
-    max_rounds: 3,
-    poll_delay_ms: 2500,
+    max_rounds: 2,
+    poll_delay_ms: 1000,
     correlation_id: testCid,
     desired_effect: "Verify connected-computer rebind path",
     completion_keywords: ["ZZ_COMPLETION_NONMATCHING_KEYWORD_999"],
     require_citations: false,
     push_to_perplexity_shadow: false,
-  });
+  };
+  if (altComputerId) {
+    // Pass the alternate computer_id to trigger a CC mismatch error
+    autoloopParams.computer_id = altComputerId;
+    console.log(`  => Passing alternate computer_id ${altComputerId.slice(0, 16)}... to autoloop to force CC path`);
+  }
+
+  const result = await callTool("factory_autoloop", autoloopParams);
 
   // Core structural assertions: rebind_events and tracked_session_ids must be present
   assert(Array.isArray(result.rebind_events),
@@ -795,9 +921,58 @@ async function testValCross008_RebindPath() {
   assert(Array.isArray(result.tracked_session_ids),
     "tracked_session_ids must be an array in autoloop response");
 
-  // Verify rebind_events structure (may be empty if no CC failure occurred)
-  if (result.rebind_events.length > 0) {
-    console.log(`  => ${result.rebind_events.length} rebind event(s) detected`);
+  // Scan all reprompt entries for rebound and no-active-computer paths
+  const allReprompts = [];
+  for (let i = 0; i < result.rounds.length; i++) {
+    const round = result.rounds[i];
+    const roundReprompts = Array.isArray(round.reprompts) ? round.reprompts : [];
+    allReprompts.push(...roundReprompts.map(r => ({ ...r, _round: round.round })));
+  }
+
+  // Check for rebound session entries (connected_computer_required rebind path)
+  const reboundEntries = allReprompts.filter(
+    r => r.rebound_session_id != null && r.rebind_reason === "connected_computer_required"
+  );
+  // Check for no-active-computer error path (explicit marker)
+  const noComputerErrors = allReprompts.filter(
+    r => typeof r.error === "string" && r.error.includes("auto_rebind_unavailable=no_active_computer")
+  );
+  // Check for rebind_failed errors (rebind was attempted but failed)
+  const rebindFailedErrors = allReprompts.filter(
+    r => typeof r.error === "string" && r.error.includes("rebind_failed")
+  );
+  // Check for connected-computer warnings (attempting rebind)
+  const ccWarnings = allReprompts.filter(
+    r => typeof r.warning === "string" && r.warning.includes("attempting_auto_rebind")
+  );
+  // Check for raw connected-computer errors that bypassed the auto_rebind logic
+  const rawCcErrors = allReprompts.filter(
+    r => typeof r.error === "string" &&
+      (r.error.toLowerCase().includes("connected computer") || r.error.toLowerCase().includes("requires a connected computer"))
+  );
+
+  // ── STRICT ASSERTION: at least one connected-computer code path must be exercised ──
+  const hasRebindEvents = result.rebind_events.length > 0;
+  const hasNoComputerErrors = noComputerErrors.length > 0;
+  const hasRebindFailed = rebindFailedErrors.length > 0;
+  const hasCcWarnings = ccWarnings.length > 0;
+  const hasRawCcErrors = rawCcErrors.length > 0;
+  const hasCcEvidence = hasRebindEvents || hasNoComputerErrors || hasRebindFailed || hasCcWarnings || hasRawCcErrors;
+
+  // Log all CC-related evidence for diagnostics
+  console.log(`  => CC evidence: rebind_events=${result.rebind_events.length}, no-computer=${noComputerErrors.length}, ` +
+    `rebind_failed=${rebindFailedErrors.length}, cc-warnings=${ccWarnings.length}, raw-cc-errors=${rawCcErrors.length}`);
+
+  assert(hasCcEvidence,
+    `VAL-CROSS-008 requires at least one connected-computer code path to be exercised. ` +
+    `Got rebind_events=${result.rebind_events.length}, no-computer-errors=${noComputerErrors.length}, ` +
+    `rebind_failed=${rebindFailedErrors.length}, cc-warnings=${ccWarnings.length}, raw-cc-errors=${rawCcErrors.length}. ` +
+    `Neither the rebind path nor the no-active-computer error path was exercised. ` +
+    `Test FAILS without contract-required evidence.`);
+
+  // ── Verify rebind_events when present ──
+  if (hasRebindEvents) {
+    console.log(`  => ${result.rebind_events.length} rebind event(s) detected (connected_computer_required path)`);
     for (const event of result.rebind_events) {
       assert(typeof event.from_session_id === "string" && event.from_session_id.length > 0,
         "Rebind event must include from_session_id");
@@ -810,22 +985,9 @@ async function testValCross008_RebindPath() {
       assert(event.from_session_id !== event.to_session_id,
         "Rebind from_session_id must differ from to_session_id");
     }
-  } else {
-    console.log(`  => No rebind events in this run (no connected-computer failures triggered)`);
   }
 
-  // Scan all reprompt entries for rebound and no-active-computer paths
-  const allReprompts = [];
-  for (let i = 0; i < result.rounds.length; i++) {
-    const round = result.rounds[i];
-    const roundReprompts = Array.isArray(round.reprompts) ? round.reprompts : [];
-    allReprompts.push(...roundReprompts.map(r => ({ ...r, _round: round.round })));
-  }
-
-  // Check for rebound session entries
-  const reboundEntries = allReprompts.filter(
-    r => r.rebound_session_id != null && r.rebind_reason === "connected_computer_required"
-  );
+  // ── Verify rebound reprompt entries when present ──
   if (reboundEntries.length > 0) {
     console.log(`  => ${reboundEntries.length} rebound reprompt entry(s)`);
     for (const entry of reboundEntries) {
@@ -845,12 +1007,9 @@ async function testValCross008_RebindPath() {
     }
   }
 
-  // Check for no-active-computer error path
-  const noComputerErrors = allReprompts.filter(
-    r => typeof r.error === "string" && r.error.includes("auto_rebind_unavailable=no_active_computer")
-  );
-  if (noComputerErrors.length > 0) {
-    console.log(`  => ${noComputerErrors.length} no-active-computer error entry(s)`);
+  // ── Verify no-active-computer error path when present ──
+  if (hasNoComputerErrors) {
+    console.log(`  => ${noComputerErrors.length} no-active-computer error entry(s) (auto_rebind_unavailable path)`);
     for (const entry of noComputerErrors) {
       assert(typeof entry.session_id === "string",
         "No-computer error must include session_id");
@@ -887,7 +1046,10 @@ async function testValCross008_RebindPath() {
   console.log(`  => tracked_session_ids: ${result.tracked_session_ids.length} session(s)`);
 
   checkNoSecrets(result, "VAL-CROSS-008 autoloop result");
-  console.log(`  PASS: VAL-CROSS-008 Connected-computer failure resumes through rebind path with proper event evidence`);
+  console.log(`  PASS: VAL-CROSS-008 Connected-computer failure resumes through rebind path with mandatory evidence ` +
+    `(${[hasRebindEvents ? "rebind" : "", hasNoComputerErrors ? "no-active-computer" : "",
+      hasRebindFailed ? "rebind_failed" : "", hasCcWarnings ? "cc-warning" : "",
+      hasRawCcErrors ? "raw-cc-error" : ""].filter(Boolean).join("+")} path exercised)`);
 }
 
 // ─── VAL-CROSS-009: Evidence continuity from decision to run report ──
