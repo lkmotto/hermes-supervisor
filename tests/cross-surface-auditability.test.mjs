@@ -659,9 +659,39 @@ async function testValCross007_CursorDedupePreventsDuplicates() {
 
   // Verify first run completed within bounds
   assert(typeof firstResult.rounds_executed === "number", "First run: rounds_executed must be numeric");
+  assert(Array.isArray(firstResult.rounds), "First run: rounds must be an array");
+  assert(firstResult.rounds.length > 0,
+    `First run must execute at least 1 round to establish cursors; got ${firstResult.rounds.length} rounds`);
   assert(firstResult.rounds_executed <= firstResult.rounds_planned,
     `First run: rounds_executed (${firstResult.rounds_executed}) must not exceed rounds_planned (${firstResult.rounds_planned})`);
-  console.log(`  => First run completed: ${firstResult.rounds_executed} rounds, status=${firstResult.status}`);
+
+  // Track which sessions were reprompted (submitted) in the first run.
+  // These are the sessions that now have established cursors and should
+  // trigger dedupe skips when reprompted again without new progress.
+  const firstRunSubmittedSessions = new Set();
+  for (let i = 0; i < firstResult.rounds.length; i++) {
+    const roundReprompts = Array.isArray(firstResult.rounds[i].reprompts) ? firstResult.rounds[i].reprompts : [];
+    for (const r of roundReprompts) {
+      if (r.session_id && r.message_id != null && !r.skipped && !r.warning && !r.error) {
+        firstRunSubmittedSessions.add(r.session_id);
+      }
+    }
+  }
+  // Also track sessions that appeared in the first run's final sessions
+  const firstRunFinalSessions = new Set(
+    (Array.isArray(firstResult.final_sessions) ? firstResult.final_sessions : [])
+      .map(s => s.session_id).filter(Boolean)
+  );
+  const firstRunProcessedSessions = new Set([...firstRunSubmittedSessions, ...firstRunFinalSessions]);
+  console.log(`  => First run: ${firstRunSubmittedSessions.size} session(s) submitted, ${firstRunFinalSessions.size} in final_sessions, ${firstRunProcessedSessions.size} unique processed`);
+
+  // STRICT: the first run must have processed at least some of the requested sessions
+  assert(firstRunProcessedSessions.size > 0,
+    `First autoloop run must process at least one of the requested sessions (${testSessionIds.length} requested); ` +
+    `got 0 processed sessions. First run must establish cursors before the dedupe-verification second run.`);
+
+  console.log(`  => First run completed: ${firstResult.rounds_executed} rounds, status=${firstResult.status}, ` +
+    `${firstRunProcessedSessions.size} session(s) processed`);
 
   // ── SECOND run: same session IDs, cursors should be unchanged, force dedupe detection ──
   console.log("  => Second autoloop run: expecting cursor-dedupe detection...");
@@ -679,8 +709,20 @@ async function testValCross007_CursorDedupePreventsDuplicates() {
 
   // Verify second run completed within bounds
   assert(typeof secondResult.rounds_executed === "number", "Second run: rounds_executed must be numeric");
+  assert(Array.isArray(secondResult.rounds), "Second run: rounds must be an array");
+  assert(secondResult.rounds.length > 0,
+    `Second run must execute at least 1 round for dedupe detection; got ${secondResult.rounds.length} rounds`);
   assert(secondResult.rounds_executed <= secondResult.rounds_planned,
     `Second run: rounds_executed (${secondResult.rounds_executed}) must not exceed rounds_planned (${secondResult.rounds_planned})`);
+
+  // Verify the second run used the SAME session IDs as the first run
+  if (Array.isArray(secondResult.tracked_session_ids)) {
+    const firstRunIds = new Set(testSessionIds);
+    const secondRunMatchCount = secondResult.tracked_session_ids.filter(id => firstRunIds.has(id)).length;
+    assert(secondRunMatchCount > 0,
+      `Second run tracked_session_ids must include sessions from the first run; ` +
+      `found ${secondRunMatchCount} matching out of ${testSessionIds.length} requested`);
+  }
 
   // Collect all reprompt entries from the SECOND run across all rounds
   const allReprompts = [];
@@ -719,10 +761,22 @@ async function testValCross007_CursorDedupePreventsDuplicates() {
 
   // STRICT: The second run on already-processed sessions MUST produce cursor-dedupe skips.
   // No lenient fallback. The cursor-dedupe skip reason is the contract-required evidence.
+  // The test FAILS if no dedupe skips are detected after the second run.
   assert(dedupeSkips.length > 0,
     `Second autoloop run must produce cursor-dedupe skips with reason=no_new_assistant_progress_since_last_reprompt; ` +
     `got ${dedupeSkips.length} dedupe skips, ${runningSkips.length} running skips, ${successfulReprompts.length} successful, ` +
-    `${errorReprompts.length} errors across ${secondResult.rounds.length} round(s)`);
+    `${errorReprompts.length} errors across ${secondResult.rounds.length} round(s). ` +
+    `First run processed ${firstRunProcessedSessions.size} session(s). ` +
+    `Second run was expected to detect unchanged cursors on those sessions.`);
+
+  // STRICT: at least one dedupe skip must be for a session that was processed in the first run
+  const dedupeSkipSessionIds = new Set(dedupeSkips.map(r => r.session_id).filter(Boolean));
+  const sessionsWithBothFirstAndDedupe = [...dedupeSkipSessionIds].filter(id => firstRunProcessedSessions.has(id));
+  assert(sessionsWithBothFirstAndDedupe.length > 0,
+    `At least one cursor-dedupe skip must correspond to a session processed in the first run. ` +
+    `First run processed ${firstRunProcessedSessions.size} session(s): ${[...firstRunProcessedSessions].slice(0, 3).join(", ")}... ` +
+    `Second run dedupe skips affect ${dedupeSkipSessionIds.size} session(s): ${[...dedupeSkipSessionIds].slice(0, 3).join(", ")}... ` +
+    `Overlap: ${sessionsWithBothFirstAndDedupe.length} session(s).`);
 
   // Verify every cursor-dedupe skip carries required evidence fields
   for (const skip of dedupeSkips) {
@@ -937,37 +991,43 @@ async function testValCross008_RebindPath() {
   const noComputerErrors = allReprompts.filter(
     r => typeof r.error === "string" && r.error.includes("auto_rebind_unavailable=no_active_computer")
   );
-  // Check for rebind_failed errors (rebind was attempted but failed)
+
+  // ── STRICT ASSERTION: only these two contract-required evidence types are accepted ──
+  // 1) rebind_events[] with reason=connected_computer_required (successful rebind path)
+  // 2) no-active-computer error entries containing auto_rebind_unavailable=no_active_computer (unavailable path)
+  // All other intermediate signals (rebind_failed, cc_warnings, raw_cc_errors) are NOT sufficient
+  // evidence on their own and do not satisfy the contract requirements.
+  const hasRebindEvents = result.rebind_events.length > 0;
+  const hasNoComputerErrors = noComputerErrors.length > 0;
+
+  // Log all CC-related signals for diagnostics
   const rebindFailedErrors = allReprompts.filter(
     r => typeof r.error === "string" && r.error.includes("rebind_failed")
   );
-  // Check for connected-computer warnings (attempting rebind)
   const ccWarnings = allReprompts.filter(
     r => typeof r.warning === "string" && r.warning.includes("attempting_auto_rebind")
   );
-  // Check for raw connected-computer errors that bypassed the auto_rebind logic
   const rawCcErrors = allReprompts.filter(
     r => typeof r.error === "string" &&
       (r.error.toLowerCase().includes("connected computer") || r.error.toLowerCase().includes("requires a connected computer"))
   );
 
-  // ── STRICT ASSERTION: at least one connected-computer code path must be exercised ──
-  const hasRebindEvents = result.rebind_events.length > 0;
-  const hasNoComputerErrors = noComputerErrors.length > 0;
-  const hasRebindFailed = rebindFailedErrors.length > 0;
-  const hasCcWarnings = ccWarnings.length > 0;
-  const hasRawCcErrors = rawCcErrors.length > 0;
-  const hasCcEvidence = hasRebindEvents || hasNoComputerErrors || hasRebindFailed || hasCcWarnings || hasRawCcErrors;
-
-  // Log all CC-related evidence for diagnostics
   console.log(`  => CC evidence: rebind_events=${result.rebind_events.length}, no-computer=${noComputerErrors.length}, ` +
     `rebind_failed=${rebindFailedErrors.length}, cc-warnings=${ccWarnings.length}, raw-cc-errors=${rawCcErrors.length}`);
 
-  assert(hasCcEvidence,
-    `VAL-CROSS-008 requires at least one connected-computer code path to be exercised. ` +
-    `Got rebind_events=${result.rebind_events.length}, no-computer-errors=${noComputerErrors.length}, ` +
-    `rebind_failed=${rebindFailedErrors.length}, cc-warnings=${ccWarnings.length}, raw-cc-errors=${rawCcErrors.length}. ` +
-    `Neither the rebind path nor the no-active-computer error path was exercised. ` +
+  // STRICT: only rebind_events OR no-active-computer error entries are accepted.
+  // Intermediate or partial signals (rebind_failed, cc_warnings, raw_cc_errors) do NOT
+  // count as contract-required evidence. The test FAILS if neither definitive path is exercised.
+  // This removes the lenient fallback that previously allowed pass on intermediate signals alone.
+  const hasStrictCcEvidence = hasRebindEvents || hasNoComputerErrors;
+
+  assert(hasStrictCcEvidence,
+    `VAL-CROSS-008 requires either rebind_events with connected_computer_required reason ` +
+    `OR no-active-computer error entries (auto_rebind_unavailable=no_active_computer) to be present. ` +
+    `Got rebind_events=${result.rebind_events.length}, no-active-computer-errors=${noComputerErrors.length}. ` +
+    `(Also observed: rebind_failed=${rebindFailedErrors.length}, cc-warnings=${ccWarnings.length}, raw-cc-errors=${rawCcErrors.length} ` +
+    `but these intermediate signals are not accepted as contract-required evidence.) ` +
+    `Neither the rebind path nor the no-active-computer error path was definitively exercised. ` +
     `Test FAILS without contract-required evidence.`);
 
   // ── Verify rebind_events when present ──
@@ -1047,9 +1107,8 @@ async function testValCross008_RebindPath() {
 
   checkNoSecrets(result, "VAL-CROSS-008 autoloop result");
   console.log(`  PASS: VAL-CROSS-008 Connected-computer failure resumes through rebind path with mandatory evidence ` +
-    `(${[hasRebindEvents ? "rebind" : "", hasNoComputerErrors ? "no-active-computer" : "",
-      hasRebindFailed ? "rebind_failed" : "", hasCcWarnings ? "cc-warning" : "",
-      hasRawCcErrors ? "raw-cc-error" : ""].filter(Boolean).join("+")} path exercised)`);
+    `(${[hasRebindEvents ? "rebind" : "", hasNoComputerErrors ? "no-active-computer" : ""].filter(Boolean).join("+")} ` +
+    `path exercised; intermediate signals excluded from acceptance)`);
 }
 
 // ─── VAL-CROSS-009: Evidence continuity from decision to run report ──
