@@ -6143,8 +6143,8 @@ async function syncCrossMachineMemory(): Promise<void> {
         if (!msgs.length) continue;
 
         // Extract key info from messages
-        const userMsgs = msgs.filter(m => m.role === "user").map(m => m.content?.trim()).filter(Boolean);
-        const assistantMsgs = msgs.filter(m => m.role === "assistant").map(m => m.content?.slice(0, 500)).filter(Boolean);
+        const userMsgs = msgs.filter(m => m.role === "user").map(m => String(m.content ?? "").trim()).filter(Boolean);
+        const assistantMsgs = msgs.filter(m => m.role === "assistant").map(m => String(m.content ?? "").slice(0, 500)).filter(Boolean);
         const fileMentions = [...assistantMsgs.join(" ").matchAll(/[A-Z]:\\[^\s"']+|\/[^\s"']+/g)].map(m => m[0]).slice(0, 10);
         const taskSummary = userMsgs.slice(0, 3).map(m => m.length > 200 ? m.slice(0, 200) + "..." : m).join(" | ");
 
