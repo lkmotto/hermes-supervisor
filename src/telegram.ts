@@ -14,7 +14,11 @@ export interface TelegramBotCallbacks {
   /** Called for /cycle — must trigger a business PM loop and return the status report. */
   handleCycle: () => Promise<string>;
   /** Called for /perplexity — push Perplexity research context for shadow learning. */
-  handlePerplexityPush: (chatId: number, userId: number, text: string) => Promise<string>;
+  handlePerplexityPush: (
+    chatId: number,
+    userId: number,
+    text: string,
+  ) => Promise<string>;
   /** Called for freeform text messages — stores an observation. */
   handleText: (chatId: number, userId: number, text: string) => Promise<void>;
 }
@@ -37,7 +41,11 @@ export class TelegramBot {
   start(): void {
     if (this.running) return;
     this.running = true;
-    console.error("[telegram] Bot starting (token present, length=" + String(this.token.length) + ")");
+    console.error(
+      "[telegram] Bot starting (token present, length=" +
+        String(this.token.length) +
+        ")",
+    );
     this.poll();
   }
 
@@ -51,7 +59,10 @@ export class TelegramBot {
     console.error("[telegram] Bot stopped");
   }
 
-  private async api(method: string, body: Record<string, unknown>): Promise<unknown> {
+  private async api(
+    method: string,
+    body: Record<string, unknown>,
+  ): Promise<unknown> {
     const url = `${TELEGRAM_API_BASE}/bot${this.token}/${method}`;
     let res: Response;
     try {
@@ -111,11 +122,15 @@ export class TelegramBot {
           }
         }
       } catch (err) {
-        const msg = err instanceof Error ? redactSecrets(err.message) : String(err);
+        const msg =
+          err instanceof Error ? redactSecrets(err.message) : String(err);
         // 401/403 are permanent auth errors — stop the bot, don't spam retries.
         const isFatal = msg.includes("401") || msg.includes("403");
         if (isFatal) {
-          console.error("[telegram] Fatal auth error (token invalid or revoked) — stopping bot:", msg);
+          console.error(
+            "[telegram] Fatal auth error (token invalid or revoked) — stopping bot:",
+            msg,
+          );
           this.stop();
           return;
         }
@@ -135,9 +150,12 @@ export class TelegramBot {
     const text = msg.text.trim();
 
     console.error(
-      "[telegram] Message from chat=" + String(chatId) +
-        " user=" + String(userId) +
-        " text_len=" + String(text.length),
+      "[telegram] Message from chat=" +
+        String(chatId) +
+        " user=" +
+        String(userId) +
+        " text_len=" +
+        String(text.length),
     );
 
     if (text.startsWith("/start")) {
@@ -151,7 +169,11 @@ export class TelegramBot {
           "You can also send me any text and I'll record it as an observation.",
       );
     } else if (text.startsWith("/perplexity")) {
-      const resp = await this.callbacks.handlePerplexityPush(chatId, userId, text);
+      const resp = await this.callbacks.handlePerplexityPush(
+        chatId,
+        userId,
+        text,
+      );
       await this.sendMessage(chatId, resp);
     } else if (text.startsWith("/status")) {
       const statusText = await this.callbacks.handleStatus();
@@ -163,7 +185,10 @@ export class TelegramBot {
     } else {
       // Freeform text → store as observation
       await this.callbacks.handleText(chatId, userId, text);
-      await this.sendMessage(chatId, "📝 Observation recorded. I'll factor this into my next cycle.");
+      await this.sendMessage(
+        chatId,
+        "📝 Observation recorded. I'll factor this into my next cycle.",
+      );
     }
   }
 

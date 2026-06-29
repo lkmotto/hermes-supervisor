@@ -18,7 +18,14 @@
  *     the Ollama path fails, ensuring the no-response branch is exercised
  */
 
-import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -38,10 +45,11 @@ async function mcpCall(method, params = {}) {
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   const raw = await res.text();
   // Parse SSE format
-  const dataLine = raw.split("\n").find(l => l.startsWith("data:"));
+  const dataLine = raw.split("\n").find((l) => l.startsWith("data:"));
   if (!dataLine) throw new Error("No data line in SSE response");
   const envelope = JSON.parse(dataLine.slice(5).trim());
-  if (envelope.error) throw new Error(`MCP error: ${JSON.stringify(envelope.error)}`);
+  if (envelope.error)
+    throw new Error(`MCP error: ${JSON.stringify(envelope.error)}`);
   return envelope.result;
 }
 
@@ -61,7 +69,10 @@ function assert(condition, message) {
 }
 
 function assertHasField(obj, field, context) {
-  assert(obj && typeof obj === "object" && field in obj, `${context}: missing field "${field}"`);
+  assert(
+    obj && typeof obj === "object" && field in obj,
+    `${context}: missing field "${field}"`,
+  );
 }
 
 // ─── Fixture helpers ────────────────────────────────────────────────
@@ -72,21 +83,85 @@ function createWorkfileFixture() {
   mkdirSync(extractedDir, { recursive: true });
 
   const facts = [
-    { canonical_key: "subject.address.street", value: "123 Main St", value_type: "string", status: "grounded", source_path: "doc1.txt" },
-    { canonical_key: "subject.address.city", value: "Springfield", value_type: "string", status: "grounded", source_path: "doc1.txt" },
-    { canonical_key: "subject.address.state", value: "IL", value_type: "string", status: "grounded", source_path: "doc1.txt" },
-    { canonical_key: "subject.address.zip", value: "62701", value_type: "string", status: "grounded", source_path: "doc1.txt" },
-    { canonical_key: "subject.gla", value: 1850, value_type: "number", status: "grounded", source_path: "doc2.txt" },
-    { canonical_key: "subject.year_built", value: 1995, value_type: "number", status: "grounded", source_path: "doc2.txt" },
-    { canonical_key: "subject.beds", value: 3, value_type: "number", status: "grounded", source_path: "doc1.txt" },
-    { canonical_key: "subject.baths", value: 2, value_type: "number", status: "grounded", source_path: "doc1.txt" },
+    {
+      canonical_key: "subject.address.street",
+      value: "123 Main St",
+      value_type: "string",
+      status: "grounded",
+      source_path: "doc1.txt",
+    },
+    {
+      canonical_key: "subject.address.city",
+      value: "Springfield",
+      value_type: "string",
+      status: "grounded",
+      source_path: "doc1.txt",
+    },
+    {
+      canonical_key: "subject.address.state",
+      value: "IL",
+      value_type: "string",
+      status: "grounded",
+      source_path: "doc1.txt",
+    },
+    {
+      canonical_key: "subject.address.zip",
+      value: "62701",
+      value_type: "string",
+      status: "grounded",
+      source_path: "doc1.txt",
+    },
+    {
+      canonical_key: "subject.gla",
+      value: 1850,
+      value_type: "number",
+      status: "grounded",
+      source_path: "doc2.txt",
+    },
+    {
+      canonical_key: "subject.year_built",
+      value: 1995,
+      value_type: "number",
+      status: "grounded",
+      source_path: "doc2.txt",
+    },
+    {
+      canonical_key: "subject.beds",
+      value: 3,
+      value_type: "number",
+      status: "grounded",
+      source_path: "doc1.txt",
+    },
+    {
+      canonical_key: "subject.baths",
+      value: 2,
+      value_type: "number",
+      status: "grounded",
+      source_path: "doc1.txt",
+    },
     // conflict fact — should be excluded from payload
-    { canonical_key: "subject.lot_size", value: "0.25 acre", value_type: "string", status: "conflict", source_path: "doc3.txt" },
+    {
+      canonical_key: "subject.lot_size",
+      value: "0.25 acre",
+      value_type: "string",
+      status: "conflict",
+      source_path: "doc3.txt",
+    },
     // missing fact — should be excluded from payload
-    { canonical_key: "subject.pool", value: null, value_type: null, status: "missing", source_path: null },
+    {
+      canonical_key: "subject.pool",
+      value: null,
+      value_type: null,
+      status: "missing",
+      source_path: null,
+    },
   ];
 
-  writeFileSync(join(extractedDir, "facts.json"), JSON.stringify(facts, null, 2), "utf8");
+  writeFileSync(
+    join(extractedDir, "facts.json"),
+    JSON.stringify(facts, null, 2),
+    "utf8",
+  );
   return dir;
 }
 
@@ -114,46 +189,67 @@ TESTS.push({
 
       // Status must be "ready", not "blocked" — the deterministic
       // fallback should produce a valid payload.
-      assert(result.status === "ready",
-        `Expected status "ready", got "${result.status}"`);
+      assert(
+        result.status === "ready",
+        `Expected status "ready", got "${result.status}"`,
+      );
 
       // Attempt count should be 1 — the no-AI branch breaks out of
       // the loop immediately, not wasting retries on empty responses.
-      assert(result.attempt_count === 1,
-        `Expected attempt_count=1 (no wasted retries), got ${result.attempt_count}`);
+      assert(
+        result.attempt_count === 1,
+        `Expected attempt_count=1 (no wasted retries), got ${result.attempt_count}`,
+      );
 
       // Mapping plan must indicate deterministic fallback.
       assert(
-        result.mapping_plan != null && result.mapping_plan.includes("deterministic"),
-        `Expected mapping_plan to include "deterministic", got "${result.mapping_plan}"`
+        result.mapping_plan != null &&
+          result.mapping_plan.includes("deterministic"),
+        `Expected mapping_plan to include "deterministic", got "${result.mapping_plan}"`,
       );
 
       // Payload should contain the mappable grounded facts.
       assertHasField(result, "field_count", "result");
-      assert(result.field_count >= 7,
-        `Expected at least 7 mapped fields, got ${result.field_count}`);
+      assert(
+        result.field_count >= 7,
+        `Expected at least 7 mapped fields, got ${result.field_count}`,
+      );
 
       // Verify the payload file was written.
       const payloadPath = join(wf, "sfrep", "payload.json");
-      assert(existsSync(payloadPath),
-        `Payload file not found at ${payloadPath}`);
+      assert(
+        existsSync(payloadPath),
+        `Payload file not found at ${payloadPath}`,
+      );
 
       // Read the payload and check specific keys are mapped correctly.
       const payloadJSON = JSON.parse(readFileSync(payloadPath, "utf8"));
-      assert(payloadJSON.StreetAddress === "123 Main St",
-        `Expected StreetAddress "123 Main St", got "${payloadJSON.StreetAddress}"`);
-      assert(payloadJSON.City === "Springfield",
-        `Expected City "Springfield", got "${payloadJSON.City}"`);
-      assert(payloadJSON.GLA === 1850,
-        `Expected GLA 1850, got ${payloadJSON.GLA}`);
-      assert(payloadJSON.Bedrooms === 3,
-        `Expected Bedrooms 3, got ${payloadJSON.Bedrooms}`);
+      assert(
+        payloadJSON.StreetAddress === "123 Main St",
+        `Expected StreetAddress "123 Main St", got "${payloadJSON.StreetAddress}"`,
+      );
+      assert(
+        payloadJSON.City === "Springfield",
+        `Expected City "Springfield", got "${payloadJSON.City}"`,
+      );
+      assert(
+        payloadJSON.GLA === 1850,
+        `Expected GLA 1850, got ${payloadJSON.GLA}`,
+      );
+      assert(
+        payloadJSON.Bedrooms === 3,
+        `Expected Bedrooms 3, got ${payloadJSON.Bedrooms}`,
+      );
 
       // Conflict and missing facts must NOT appear in the payload.
-      assert(!("LotSize" in payloadJSON),
-        "Conflict fact (lot_size) should not appear in payload");
-      assert(!("Pool" in payloadJSON),
-        "Missing fact (pool) should not appear in payload");
+      assert(
+        !("LotSize" in payloadJSON),
+        "Conflict fact (lot_size) should not appear in payload",
+      );
+      assert(
+        !("Pool" in payloadJSON),
+        "Missing fact (pool) should not appear in payload",
+      );
 
       return true;
     } finally {
@@ -172,14 +268,20 @@ TESTS.push({
         max_attempts: 1,
       });
 
-      assert(result.status === "ready",
-        `Expected status "ready", got "${result.status}"`);
+      assert(
+        result.status === "ready",
+        `Expected status "ready", got "${result.status}"`,
+      );
 
-      assert(result.ready_for_sfrep_apply === true,
-        `Expected ready_for_sfrep_apply=true, got ${result.ready_for_sfrep_apply}`);
+      assert(
+        result.ready_for_sfrep_apply === true,
+        `Expected ready_for_sfrep_apply=true, got ${result.ready_for_sfrep_apply}`,
+      );
 
-      assert(result.field_count > 0,
-        `Expected field_count > 0, got ${result.field_count}`);
+      assert(
+        result.field_count > 0,
+        `Expected field_count > 0, got ${result.field_count}`,
+      );
 
       // Diagnostics should mention the deterministic fallback.
       const diagText = Array.isArray(result.diagnostics)
@@ -187,7 +289,7 @@ TESTS.push({
         : String(result.diagnostics ?? "");
       assert(
         diagText.includes("deterministic fallback"),
-        `Diagnostics should mention "deterministic fallback", got: ${diagText}`
+        `Diagnostics should mention "deterministic fallback", got: ${diagText}`,
       );
 
       return true;
@@ -204,9 +306,13 @@ TESTS.push({
     const dir = mkdtempSync(join(tmpdir(), "sfrep-fallback-test-"));
     const extractedDir = join(dir, "extracted");
     mkdirSync(extractedDir, { recursive: true });
-    writeFileSync(join(extractedDir, "facts.json"), JSON.stringify([
-      { canonical_key: "subject.beds", value: null, status: "missing" },
-    ]), "utf8");
+    writeFileSync(
+      join(extractedDir, "facts.json"),
+      JSON.stringify([
+        { canonical_key: "subject.beds", value: null, status: "missing" },
+      ]),
+      "utf8",
+    );
 
     try {
       const result = await callTool("sfrep_autonomous_handoff", {
@@ -214,14 +320,23 @@ TESTS.push({
         max_attempts: 3,
       });
 
-      assert(result.status === "blocked",
-        `Expected status "blocked" for no grounded facts, got "${result.status}"`);
-      assert(result.reason === "empty_payload" || String(result.reason).includes("empty"),
-        `Expected reason containing "empty", got "${result.reason}"`);
-      assert(result.field_count === 0,
-        `Expected field_count=0, got ${result.field_count}`);
-      assert(result.attempt_count === 0,
-        `Expected attempt_count=0 (loop never entered), got ${result.attempt_count}`);
+      assert(
+        result.status === "blocked",
+        `Expected status "blocked" for no grounded facts, got "${result.status}"`,
+      );
+      assert(
+        result.reason === "empty_payload" ||
+          String(result.reason).includes("empty"),
+        `Expected reason containing "empty", got "${result.reason}"`,
+      );
+      assert(
+        result.field_count === 0,
+        `Expected field_count=0, got ${result.field_count}`,
+      );
+      assert(
+        result.attempt_count === 0,
+        `Expected attempt_count=0 (loop never entered), got ${result.attempt_count}`,
+      );
 
       return true;
     } finally {
@@ -250,7 +365,9 @@ async function runTests() {
   let failed = 0;
   const failures = [];
 
-  console.log(`Running ${TESTS.length} SFREP deterministic-fallback regression tests...\n`);
+  console.log(
+    `Running ${TESTS.length} SFREP deterministic-fallback regression tests...\n`,
+  );
 
   for (const test of TESTS) {
     try {

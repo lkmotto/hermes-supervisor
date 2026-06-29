@@ -69,8 +69,13 @@ test("normalizeConfidenceThreshold supports percent-style inputs", () => {
 });
 
 test("extractCitationUrls returns machine-readable deduped URLs", () => {
-  const urls = extractCitationUrls("Sources: https://a.example.com/x, https://b.example.com/y). Also https://a.example.com/x.");
-  assert.deepEqual(urls, ["https://a.example.com/x", "https://b.example.com/y"]);
+  const urls = extractCitationUrls(
+    "Sources: https://a.example.com/x, https://b.example.com/y). Also https://a.example.com/x.",
+  );
+  assert.deepEqual(urls, [
+    "https://a.example.com/x",
+    "https://b.example.com/y",
+  ]);
 });
 
 test("extractConfidenceScore normalizes percent confidence", () => {

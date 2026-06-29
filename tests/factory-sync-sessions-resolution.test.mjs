@@ -18,7 +18,8 @@ async function mcpCall(method, params = {}) {
   const dataLine = raw.split("\n").find((line) => line.startsWith("data:"));
   if (!dataLine) throw new Error("No SSE data line found");
   const envelope = JSON.parse(dataLine.slice(5).trim());
-  if (envelope.error) throw new Error(`MCP error: ${JSON.stringify(envelope.error)}`);
+  if (envelope.error)
+    throw new Error(`MCP error: ${JSON.stringify(envelope.error)}`);
   return envelope.result;
 }
 
@@ -48,14 +49,30 @@ test("VAL-ORCH-001 each unique session_id appears exactly once in output", async
   });
 
   assert.ok(Array.isArray(result.sessions), "sessions should be an array");
-  assert.equal(result.sessions.length, 3, "three unique IDs should yield three snapshots");
+  assert.equal(
+    result.sessions.length,
+    3,
+    "three unique IDs should yield three snapshots",
+  );
 
   const returnedIds = result.sessions.map((s) => s.session_id).sort();
   const expectedIds = [...fakeSessionIds].sort();
-  assert.deepEqual(returnedIds, expectedIds, "every requested session_id appears once");
+  assert.deepEqual(
+    returnedIds,
+    expectedIds,
+    "every requested session_id appears once",
+  );
 
-  assert.equal(result.summary.total, 3, "summary.total must equal number of unique requested IDs");
-  assert.equal(result.summary.total, result.sessions.length, "summary.total must align with returned snapshot rows");
+  assert.equal(
+    result.summary.total,
+    3,
+    "summary.total must equal number of unique requested IDs",
+  );
+  assert.equal(
+    result.summary.total,
+    result.sessions.length,
+    "summary.total must align with returned snapshot rows",
+  );
 });
 
 test("VAL-ORCH-001 duplicate session_ids are deduplicated", async () => {
@@ -64,9 +81,21 @@ test("VAL-ORCH-001 duplicate session_ids are deduplicated", async () => {
     session_ids: [dupId, dupId, dupId],
   });
 
-  assert.equal(result.sessions.length, 1, "three duplicates should yield exactly one snapshot");
-  assert.equal(result.sessions[0].session_id, dupId, "returned session_id must match the requested ID");
-  assert.equal(result.summary.total, 1, "summary.total must reflect deduplication");
+  assert.equal(
+    result.sessions.length,
+    1,
+    "three duplicates should yield exactly one snapshot",
+  );
+  assert.equal(
+    result.sessions[0].session_id,
+    dupId,
+    "returned session_id must match the requested ID",
+  );
+  assert.equal(
+    result.summary.total,
+    1,
+    "summary.total must reflect deduplication",
+  );
 });
 
 test("VAL-ORCH-001 unknown session IDs surface as explicit error rows", async () => {
@@ -75,13 +104,40 @@ test("VAL-ORCH-001 unknown session IDs surface as explicit error rows", async ()
     session_ids: [unknownId],
   });
 
-  assert.equal(result.sessions.length, 1, "one unknown ID should yield one snapshot");
-  assert.equal(result.sessions[0].session_id, unknownId, "error row must include the requested session_id");
-  assert.equal(result.sessions[0].status, "error", "unknown session must have status 'error'");
-  assert.strictEqual(result.sessions[0].completed, false, "error snapshot must not be completed");
-  assert.strictEqual(result.sessions[0].blocked, true, "error snapshot must be blocked");
-  assert.equal(typeof result.sessions[0].error, "string", "error snapshot must include an error message");
-  assert.ok(result.sessions[0].error.length > 0, "error message must not be empty");
+  assert.equal(
+    result.sessions.length,
+    1,
+    "one unknown ID should yield one snapshot",
+  );
+  assert.equal(
+    result.sessions[0].session_id,
+    unknownId,
+    "error row must include the requested session_id",
+  );
+  assert.equal(
+    result.sessions[0].status,
+    "error",
+    "unknown session must have status 'error'",
+  );
+  assert.strictEqual(
+    result.sessions[0].completed,
+    false,
+    "error snapshot must not be completed",
+  );
+  assert.strictEqual(
+    result.sessions[0].blocked,
+    true,
+    "error snapshot must be blocked",
+  );
+  assert.equal(
+    typeof result.sessions[0].error,
+    "string",
+    "error snapshot must include an error message",
+  );
+  assert.ok(
+    result.sessions[0].error.length > 0,
+    "error message must not be empty",
+  );
 });
 
 test("VAL-ORCH-001 unknown IDs are not silently dropped from output", async () => {
@@ -101,7 +157,11 @@ test("VAL-ORCH-001 unknown IDs are not silently dropped from output", async () =
 
   // All should be error rows since the IDs don't exist.
   for (const session of result.sessions) {
-    assert.equal(session.status, "error", `session ${session.session_id} must be an error row`);
+    assert.equal(
+      session.status,
+      "error",
+      `session ${session.session_id} must be an error row`,
+    );
   }
 });
 
@@ -115,13 +175,37 @@ test("VAL-ORCH-001 summary totals align with returned snapshot rows", async () =
   });
 
   assert.equal(result.summary.total, 2, "summary.total must equal 2");
-  assert.equal(result.summary.total, result.sessions.length, "summary.total must equal sessions array length");
+  assert.equal(
+    result.summary.total,
+    result.sessions.length,
+    "summary.total must equal sessions array length",
+  );
   // All unknown → all blocked, none completed
-  assert.equal(result.summary.completed, 0, "no sessions should be completed for unknown IDs");
-  assert.equal(result.summary.blocked, 2, "all unknown sessions should be blocked");
-  assert.equal(result.summary.pending, 2, "all unknown sessions should be pending");
-  assert.equal(result.summary.running, 0, "error snapshots must not count as running");
-  assert.equal(result.summary.gated_incomplete, 0, "error snapshots must not count as gated_incomplete");
+  assert.equal(
+    result.summary.completed,
+    0,
+    "no sessions should be completed for unknown IDs",
+  );
+  assert.equal(
+    result.summary.blocked,
+    2,
+    "all unknown sessions should be blocked",
+  );
+  assert.equal(
+    result.summary.pending,
+    2,
+    "all unknown sessions should be pending",
+  );
+  assert.equal(
+    result.summary.running,
+    0,
+    "error snapshots must not count as running",
+  );
+  assert.equal(
+    result.summary.gated_incomplete,
+    0,
+    "error snapshots must not count as gated_incomplete",
+  );
 });
 
 test("VAL-ORCH-001 mixed valid and invalid IDs each produce their own row", async () => {
@@ -136,8 +220,16 @@ test("VAL-ORCH-001 mixed valid and invalid IDs each produce their own row", asyn
   assert.equal(errorRow.status, "error", "invalid ID must have error status");
 
   // No rows should be missing. The only session ID requested must be present.
-  assert.equal(result.sessions.length, 1, "only the requested ID should appear");
-  assert.equal(result.sessions[0].session_id, invalidId, "the returned session_id must match");
+  assert.equal(
+    result.sessions.length,
+    1,
+    "only the requested ID should appear",
+  );
+  assert.equal(
+    result.sessions[0].session_id,
+    invalidId,
+    "the returned session_id must match",
+  );
 });
 
 test("VAL-ORCH-001 summary total is independent of session status distribution", async () => {
@@ -150,15 +242,21 @@ test("VAL-ORCH-001 summary total is independent of session status distribution",
 
   // summary.total must always equal the number of unique requested IDs,
   // regardless of how many are valid or invalid.
-  assert.equal(result.summary.total, ids.length, "summary.total must match unique requested count");
-  assert.equal(result.sessions.length, ids.length, "sessions array length must match unique requested count");
+  assert.equal(
+    result.summary.total,
+    ids.length,
+    "summary.total must match unique requested count",
+  );
+  assert.equal(
+    result.sessions.length,
+    ids.length,
+    "sessions array length must match unique requested count",
+  );
 });
 
 // ─── Deduplication imports (unit-level from factory-sync-completion-gate) ───
 
-import {
-  extractCitationUrls,
-} from "../dist/factory-sync-completion-gate.js";
+import { extractCitationUrls } from "../dist/factory-sync-completion-gate.js";
 
 test("extractCitationUrls deduplicates (session resolution uses same pattern)", () => {
   // The same dedupe pattern is used in session ID resolution.

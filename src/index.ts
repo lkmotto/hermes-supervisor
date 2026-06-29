@@ -2,15 +2,29 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type Tool,
+} from "@modelcontextprotocol/sdk/types.js";
 import initSqlJs from "sql.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RISK_METADATA, evaluateToolPolicy, type RiskMetadata } from "./policy.js";
+import {
+  RISK_METADATA,
+  evaluateToolPolicy,
+  type RiskMetadata,
+} from "./policy.js";
 import { redactSecrets, redactMetadata } from "./redact.js";
 import { FleetClient } from "./fleet.js";
 import { TelegramBot, type TelegramBotCallbacks } from "./telegram.js";
@@ -91,15 +105,25 @@ const PERPLEXITY_KEY = process.env.PERPLEXITY_API_KEY ?? "";
 const HOSTINGER_API_BASE = "https://developers.hostinger.com";
 const VPS_ID = parseInt(process.env.HERMES_VPS_ID ?? "1511806", 10);
 const DB_PATH = process.env.HERMES_DB_PATH ?? "./hermes.db";
-const FLEET_AGENT_NAME = process.env.HERMES_FLEET_AGENT_NAME?.trim() || "hermes";
-const FLEET_AUTONOMY_LEVEL = process.env.HERMES_AUTONOMY_LEVEL?.trim() || "managed";
+const FLEET_AGENT_NAME =
+  process.env.HERMES_FLEET_AGENT_NAME?.trim() || "hermes";
+const FLEET_AUTONOMY_LEVEL =
+  process.env.HERMES_AUTONOMY_LEVEL?.trim() || "managed";
 const HERMES_MCP_AUTH_TOKEN = (process.env.HERMES_MCP_AUTH_TOKEN ?? "").trim();
 const FACTORY_API_KEY = (process.env.FACTORY_API_KEY ?? "").trim();
-const TELEGRAM_BOT_TOKEN = (process.env.HERMES_TELE_BOT_TOKEN ?? process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
-const MOTTO_SKILLS_TOOLS_DIR = process.env.MOTTO_SKILLS_TOOLS_DIR?.trim() || "/root/motto-skills/tools";
-const MOTTO_KNOWLEDGE_DIR = process.env.MOTTO_KNOWLEDGE_DIR?.trim() || join(homedir(), ".factory", "knowledge");
+const TELEGRAM_BOT_TOKEN = (
+  process.env.HERMES_TELE_BOT_TOKEN ??
+  process.env.TELEGRAM_BOT_TOKEN ??
+  ""
+).trim();
+const MOTTO_SKILLS_TOOLS_DIR =
+  process.env.MOTTO_SKILLS_TOOLS_DIR?.trim() || "/root/motto-skills/tools";
+const MOTTO_KNOWLEDGE_DIR =
+  process.env.MOTTO_KNOWLEDGE_DIR?.trim() ||
+  join(homedir(), ".factory", "knowledge");
 const WF1_PROMPT_PATH = "/root/missions/neon-wf1/prompts/wf1_prompt.md";
-const ORDER_INTAKE_WORKER_PATH = "/opt/motto-skills/workers/order-intake/src/index.js";
+const ORDER_INTAKE_WORKER_PATH =
+  "/opt/motto-skills/workers/order-intake/src/index.js";
 const FLEET_CONTROL_PLANE = new FleetClient({
   baseUrl: process.env.MOTTO_MCP_URL ?? "",
   authToken: process.env.MOTTO_MCP_AUTH_TOKEN ?? "",
@@ -120,7 +144,10 @@ function saveDb() {
 
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { saveDb(); saveTimer = null; }, 5000);
+  saveTimer = setTimeout(() => {
+    saveDb();
+    saveTimer = null;
+  }, 5000);
 }
 
 async function initDb() {
@@ -140,8 +167,12 @@ async function initDb() {
       created_at TEXT DEFAULT (datetime('now'))
     )
   `);
-  db.run("CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)");
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category)",
+  );
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
+  );
   saveDb();
 }
 
@@ -149,7 +180,10 @@ async function initDb() {
 
 async function hostingerGet(path: string) {
   const res = await fetch(`${HOSTINGER_API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${HOSTINGER_TOKEN}`, Accept: "application/json" },
+    headers: {
+      Authorization: `Bearer ${HOSTINGER_TOKEN}`,
+      Accept: "application/json",
+    },
   });
   if (!res.ok) throw new Error(`Hostinger ${res.status}: ${await res.text()}`);
   return res.json();
@@ -158,7 +192,11 @@ async function hostingerGet(path: string) {
 async function hostingerPost(path: string, body?: unknown) {
   const res = await fetch(`${HOSTINGER_API_BASE}${path}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${HOSTINGER_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
+    headers: {
+      Authorization: `Bearer ${HOSTINGER_TOKEN}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`Hostinger ${res.status}: ${await res.text()}`);
@@ -168,11 +206,18 @@ async function hostingerPost(path: string, body?: unknown) {
 async function perplexityResearch(query: string) {
   const res = await fetch("https://api.perplexity.ai/chat/completions", {
     method: "POST",
-    headers: { Authorization: `Bearer ${PERPLEXITY_KEY}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${PERPLEXITY_KEY}`,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       model: "sonar-pro",
       messages: [
-        { role: "system", content: "You are a research assistant for a project manager agent. Provide thorough, well-structured answers with citations. Be precise and factual." },
+        {
+          role: "system",
+          content:
+            "You are a research assistant for a project manager agent. Provide thorough, well-structured answers with citations. Be precise and factual.",
+        },
         { role: "user", content: query },
       ],
       max_tokens: 4000,
@@ -325,9 +370,15 @@ interface StoredMemoryRecord {
   metadata: Record<string, unknown>;
 }
 
-function normalizeMemoryCategory(raw: unknown, fallback: TypedMemoryCategory = "observation"): TypedMemoryCategory {
+function normalizeMemoryCategory(
+  raw: unknown,
+  fallback: TypedMemoryCategory = "observation",
+): TypedMemoryCategory {
   if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
-  const normalized = raw.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  const normalized = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
   if (normalized in MEMORY_CATEGORY_ALIASES) {
     return MEMORY_CATEGORY_ALIASES[normalized];
   }
@@ -337,7 +388,10 @@ function normalizeMemoryCategory(raw: unknown, fallback: TypedMemoryCategory = "
   return fallback;
 }
 
-function normalizeConfidence(raw: unknown, fallback: ConfidenceLevel = "medium"): ConfidenceLevel {
+function normalizeConfidence(
+  raw: unknown,
+  fallback: ConfidenceLevel = "medium",
+): ConfidenceLevel {
   if (typeof raw !== "string") return fallback;
   const value = raw.trim().toLowerCase();
   if (value === "high" || value === "medium" || value === "low") return value;
@@ -346,7 +400,8 @@ function normalizeConfidence(raw: unknown, fallback: ConfidenceLevel = "medium")
 
 function parseMetadata(raw: unknown): Record<string, unknown> {
   if (!raw) return {};
-  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw === "object" && !Array.isArray(raw))
+    return raw as Record<string, unknown>;
   if (typeof raw !== "string") return {};
   try {
     const parsed = JSON.parse(raw);
@@ -359,15 +414,24 @@ function parseMetadata(raw: unknown): Record<string, unknown> {
   return {};
 }
 
-function buildTraceabilityMetadata(input: unknown, opts: TraceabilityOptions): Record<string, unknown> {
+function buildTraceabilityMetadata(
+  input: unknown,
+  opts: TraceabilityOptions,
+): Record<string, unknown> {
   const incoming = parseMetadata(input);
-  const source = typeof incoming.source === "string" && incoming.source.trim().length > 0
-    ? incoming.source
-    : opts.source;
-  const timestamp = typeof incoming.timestamp === "string" && incoming.timestamp.trim().length > 0
-    ? incoming.timestamp
-    : (opts.timestamp ?? nowIso());
-  const confidence = normalizeConfidence(incoming.confidence ?? opts.confidence, "medium");
+  const source =
+    typeof incoming.source === "string" && incoming.source.trim().length > 0
+      ? incoming.source
+      : opts.source;
+  const timestamp =
+    typeof incoming.timestamp === "string" &&
+    incoming.timestamp.trim().length > 0
+      ? incoming.timestamp
+      : opts.timestamp ?? nowIso();
+  const confidence = normalizeConfidence(
+    incoming.confidence ?? opts.confidence,
+    "medium",
+  );
   const base: Record<string, unknown> = {
     ...incoming,
     source,
@@ -391,7 +455,10 @@ function storeTypedMemoryRecord(args: {
   trace: TraceabilityOptions;
 }): StoredMemoryRecord {
   const id = randomUUID();
-  const category = normalizeMemoryCategory(args.category, args.fallbackCategory ?? "observation");
+  const category = normalizeMemoryCategory(
+    args.category,
+    args.fallbackCategory ?? "observation",
+  );
   const metadata = buildTraceabilityMetadata(args.metadata, args.trace);
   db.run(
     "INSERT INTO memories (id, category, content, metadata) VALUES (?, ?, ?, ?)",
@@ -407,7 +474,9 @@ function nowIso(): string {
 
 function normalizeCorrelationId(raw?: string): string {
   const trimmed = (raw ?? "").trim();
-  return trimmed.length > 0 ? trimmed : `VALIDATION-FLEET-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  return trimmed.length > 0
+    ? trimmed
+    : `VALIDATION-FLEET-${Date.now()}-${randomUUID().slice(0, 8)}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -421,7 +490,10 @@ function asArray(value: unknown): unknown[] {
 }
 
 function asStringArray(value: unknown): string[] {
-  return asArray(value).filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return asArray(value).filter(
+    (item): item is string =>
+      typeof item === "string" && item.trim().length > 0,
+  );
 }
 
 function asNonNegativeInt(value: unknown, fallback: number): number {
@@ -457,7 +529,8 @@ function asOptionalString(value: unknown): string | null {
 function asIdentifier(value: unknown): string | null {
   const text = asOptionalString(value);
   if (text) return text;
-  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
+  if (typeof value === "number" && Number.isFinite(value))
+    return String(Math.trunc(value));
   return null;
 }
 
@@ -517,19 +590,25 @@ function loadOnlineWorkflowAwareness(): OnlineSeededWorkflowAwareness {
         const stepNumber = Number.parseInt(match[1], 10);
         const portal = match[2].trim();
         const action = match[3].trim();
-        const executionClassification: "headless-safe" | "session-bound"
-          = /(auth|login|session|desktop|browser|mfa|gmail|matrix|taxnet|mls|comet|sharepoint)/i.test(`${portal} ${action}`)
+        const executionClassification: "headless-safe" | "session-bound" =
+          /(auth|login|session|desktop|browser|mfa|gmail|matrix|taxnet|mls|comet|sharepoint)/i.test(
+            `${portal} ${action}`,
+          )
             ? "session-bound"
             : "headless-safe";
         wf1Steps.push({
-          step_number: Number.isFinite(stepNumber) ? stepNumber : wf1Steps.length + 1,
+          step_number: Number.isFinite(stepNumber)
+            ? stepNumber
+            : wf1Steps.length + 1,
           portal,
           action: redactSecrets(action),
           execution_classification: executionClassification,
         });
       }
       for (let i = 0; i + 1 < wf1Steps.length; i += 1) {
-        handoffPoints.push(`${wf1Steps[i].portal} -> ${wf1Steps[i + 1].portal}`);
+        handoffPoints.push(
+          `${wf1Steps[i].portal} -> ${wf1Steps[i + 1].portal}`,
+        );
       }
     } catch {
       // Best-effort seeding.
@@ -560,7 +639,11 @@ function loadOnlineWorkflowAwareness(): OnlineSeededWorkflowAwareness {
   return cachedOnlineWorkflowAwareness;
 }
 
-type BridgeStoreType = "workflow-library" | "decision-log" | "knowledge-distiller" | "session-postmortem";
+type BridgeStoreType =
+  | "workflow-library"
+  | "decision-log"
+  | "knowledge-distiller"
+  | "session-postmortem";
 
 interface BridgeResult {
   store_type: BridgeStoreType;
@@ -598,7 +681,11 @@ function bridgeStorePath(storeType: BridgeStoreType, recordId: string): string {
   }
 }
 
-function executeMottoSkillsTool(scriptName: string, command: string, payload: Record<string, unknown>): Record<string, unknown> {
+function executeMottoSkillsTool(
+  scriptName: string,
+  command: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
   const scriptPath = join(MOTTO_SKILLS_TOOLS_DIR, scriptName);
   if (!existsSync(scriptPath)) {
     throw new Error(`motto-skills tool missing: ${scriptPath}`);
@@ -623,7 +710,11 @@ function executeMottoSkillsTool(scriptName: string, command: string, payload: Re
     throw new Error(`motto-skills ${scriptName} failed: ${proc.error.message}`);
   }
   if (typeof proc.status === "number" && proc.status !== 0) {
-    throw new Error(`motto-skills ${scriptName} exit ${proc.status}: ${redactSecrets((proc.stderr ?? "").trim())}`);
+    throw new Error(
+      `motto-skills ${scriptName} exit ${proc.status}: ${redactSecrets(
+        (proc.stderr ?? "").trim(),
+      )}`,
+    );
   }
   const stdout = (proc.stdout ?? "").trim();
   if (!stdout) return {};
@@ -638,7 +729,9 @@ function executeMottoSkillsTool(scriptName: string, command: string, payload: Re
 }
 
 function memoryAlreadyIngestedForTask(taskId: string): boolean {
-  const stmt = db.prepare("SELECT id FROM memories WHERE metadata LIKE ? LIMIT 1");
+  const stmt = db.prepare(
+    "SELECT id FROM memories WHERE metadata LIKE ? LIMIT 1",
+  );
   // Escape SQL LIKE wildcards (_ %) in the literal field-name portion of the pattern.
   stmt.bind([`%\"local\\_task\\_id\":\"${taskId}\"%`]);
   const found = stmt.step();
@@ -651,7 +744,7 @@ function recentBridgeReferences(limit: number): Array<Record<string, unknown>> {
     "SELECT id, category, metadata, created_at FROM memories WHERE metadata LIKE ? ORDER BY created_at DESC LIMIT ?",
   );
   // Escape SQL LIKE wildcards (_ %) in the literal field-name portion of the pattern.
-  stmt.bind(["%\"bridge\\_store\\_type\"%", Math.max(1, Math.trunc(limit))]);
+  stmt.bind(['%"bridge\\_store\\_type"%', Math.max(1, Math.trunc(limit))]);
   const out: Array<Record<string, unknown>> = [];
   while (stmt.step()) {
     const row = stmt.getAsObject() as Record<string, unknown>;
@@ -696,9 +789,10 @@ function restoreLearningStateFromMemory() {
       const metadata = parseMetadata(row.metadata);
       // Only set lastLearnCycle from learning-category records.
       if (!fleetLifecycleState.lastLearnCycle && row.category === "learning") {
-        const ts = asOptionalString(metadata.timestamp)
-          ?? asOptionalString(metadata.observed_at)
-          ?? asOptionalString(row.created_at);
+        const ts =
+          asOptionalString(metadata.timestamp) ??
+          asOptionalString(metadata.observed_at) ??
+          asOptionalString(row.created_at);
         if (ts) fleetLifecycleState.lastLearnCycle = ts;
       }
       if (row.category === "capability_gap") {
@@ -730,14 +824,23 @@ function restoreLearningStateFromMemory() {
 }
 
 function currentBlockedCapabilities(extra: string[] = []): string[] {
-  const blocked = new Set<string>([...fleetLifecycleState.blockedCapabilities, ...extra]);
-  if (!FLEET_CONTROL_PLANE.isConfigured()) blocked.add("motto_fleet_control_plane_unconfigured");
-  if (fleetLifecycleState.pendingRetries.length > 0) blocked.add("fleet_write_pending_retry");
-  if (fleetLifecycleState.pendingKnowledgeRetries.length > 0) blocked.add("knowledge_store_pending_retry");
+  const blocked = new Set<string>([
+    ...fleetLifecycleState.blockedCapabilities,
+    ...extra,
+  ]);
+  if (!FLEET_CONTROL_PLANE.isConfigured())
+    blocked.add("motto_fleet_control_plane_unconfigured");
+  if (fleetLifecycleState.pendingRetries.length > 0)
+    blocked.add("fleet_write_pending_retry");
+  if (fleetLifecycleState.pendingKnowledgeRetries.length > 0)
+    blocked.add("knowledge_store_pending_retry");
   return [...blocked];
 }
 
-function buildHeartbeatStatus(mode: string, currentProcessFocus: string): FleetHeartbeatStatus {
+function buildHeartbeatStatus(
+  mode: string,
+  currentProcessFocus: string,
+): FleetHeartbeatStatus {
   return {
     mode: redactSecrets(mode),
     autonomy_level: redactSecrets(FLEET_AUTONOMY_LEVEL),
@@ -770,12 +873,19 @@ function persistFleetRetry(record: FleetFailureRecord) {
   }
 }
 
-function queueFleetRetry(operation: string, correlationId: string, runId: string | null, error: unknown) {
+function queueFleetRetry(
+  operation: string,
+  correlationId: string,
+  runId: string | null,
+  error: unknown,
+) {
   const record: FleetFailureRecord = {
     operation,
     correlation_id: correlationId,
     run_id: runId,
-    error: redactSecrets(error instanceof Error ? error.message : String(error)),
+    error: redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    ),
     queued_at: nowIso(),
     status: "pending_retry",
     failure_surface: "fleet",
@@ -810,12 +920,19 @@ function persistKnowledgeRetry(record: FleetFailureRecord) {
   }
 }
 
-function queueKnowledgeRetry(operation: string, correlationId: string, runId: string | null, error: unknown) {
+function queueKnowledgeRetry(
+  operation: string,
+  correlationId: string,
+  runId: string | null,
+  error: unknown,
+) {
   const record: FleetFailureRecord = {
     operation,
     correlation_id: correlationId,
     run_id: runId,
-    error: redactSecrets(error instanceof Error ? error.message : String(error)),
+    error: redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    ),
     queued_at: nowIso(),
     status: "pending_retry",
     failure_surface: "knowledge_store",
@@ -854,10 +971,13 @@ function shouldSimulateOperationFailure(
   operation: string,
   section?: string,
 ): boolean {
-  const operationMatches = asStringArray(simulateConfig?.fleet_operations).includes(operation);
-  const sectionMatches = typeof section === "string"
-    ? asStringArray(simulateConfig?.fleet_sections).includes(section)
-    : false;
+  const operationMatches = asStringArray(
+    simulateConfig?.fleet_operations,
+  ).includes(operation);
+  const sectionMatches =
+    typeof section === "string"
+      ? asStringArray(simulateConfig?.fleet_sections).includes(section)
+      : false;
   return operationMatches || sectionMatches;
 }
 
@@ -915,7 +1035,9 @@ function persistCycleKnowledgeRecord(args: {
   } catch (error) {
     return {
       ok: false,
-      error: redactSecrets(error instanceof Error ? error.message : String(error)),
+      error: redactSecrets(
+        error instanceof Error ? error.message : String(error),
+      ),
     };
   }
 }
@@ -931,7 +1053,8 @@ interface NormalizedLearning {
 }
 
 function parseRepeatCount(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.trunc(value));
+  if (typeof value === "number" && Number.isFinite(value))
+    return Math.max(0, Math.trunc(value));
   if (typeof value === "string") {
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
@@ -942,10 +1065,26 @@ function parseRepeatCount(value: unknown): number {
 function inferBridgeStoreHint(value: unknown): BridgeStoreType | null {
   const normalized = asOptionalString(value)?.toLowerCase() ?? null;
   if (!normalized) return null;
-  if (["workflow", "workflow-library", "workflow_library"].includes(normalized)) return "workflow-library";
-  if (["decision", "decision-log", "decision_log"].includes(normalized)) return "decision-log";
-  if (["knowledge", "knowledge-distiller", "knowledge_distiller", "fact", "facts"].includes(normalized)) return "knowledge-distiller";
-  if (["postmortem", "session-postmortem", "session_postmortem"].includes(normalized)) return "session-postmortem";
+  if (["workflow", "workflow-library", "workflow_library"].includes(normalized))
+    return "workflow-library";
+  if (["decision", "decision-log", "decision_log"].includes(normalized))
+    return "decision-log";
+  if (
+    [
+      "knowledge",
+      "knowledge-distiller",
+      "knowledge_distiller",
+      "fact",
+      "facts",
+    ].includes(normalized)
+  )
+    return "knowledge-distiller";
+  if (
+    ["postmortem", "session-postmortem", "session_postmortem"].includes(
+      normalized,
+    )
+  )
+    return "session-postmortem";
   return null;
 }
 
@@ -958,18 +1097,28 @@ function normalizeLearningEntries(
   const out: NormalizedLearning[] = [];
   for (let index = 0; index < rawLearnings.length; index += 1) {
     const source = asRecord(rawLearnings[index]);
-    const content = asOptionalString(source.content)
-      ?? asOptionalString(source.summary)
-      ?? asOptionalString(source.learning)
-      ?? asOptionalString(source.note)
-      ?? "";
+    const content =
+      asOptionalString(source.content) ??
+      asOptionalString(source.summary) ??
+      asOptionalString(source.learning) ??
+      asOptionalString(source.note) ??
+      "";
     if (!content) continue;
-    const category = normalizeMemoryCategory(source.category ?? source.type, "learning");
-    const repeated = asBool(source.repeated ?? source.is_repeated, false)
-      || parseRepeatCount(source.repeat_count ?? source.repetition_count) >= 2;
-    const material = asBool(source.material ?? source.is_material, false)
-      || ["high", "critical", "p0", "p1"].includes((asOptionalString(source.priority) ?? "").toLowerCase())
-      || ["high", "critical", "material"].includes((asOptionalString(source.impact) ?? "").toLowerCase());
+    const category = normalizeMemoryCategory(
+      source.category ?? source.type,
+      "learning",
+    );
+    const repeated =
+      asBool(source.repeated ?? source.is_repeated, false) ||
+      parseRepeatCount(source.repeat_count ?? source.repetition_count) >= 2;
+    const material =
+      asBool(source.material ?? source.is_material, false) ||
+      ["high", "critical", "p0", "p1"].includes(
+        (asOptionalString(source.priority) ?? "").toLowerCase(),
+      ) ||
+      ["high", "critical", "material"].includes(
+        (asOptionalString(source.impact) ?? "").toLowerCase(),
+      );
     const metadata = buildTraceabilityMetadata(
       {
         ...source,
@@ -978,7 +1127,9 @@ function normalizeLearningEntries(
         observed_at: observedAt,
       },
       {
-        source: asOptionalString(source.source) ?? "business_management_cycle_learning",
+        source:
+          asOptionalString(source.source) ??
+          "business_management_cycle_learning",
         correlationId,
         runId,
         timestamp: observedAt,
@@ -992,7 +1143,9 @@ function normalizeLearningEntries(
       metadata,
       repeated,
       material,
-      bridgeStoreHint: inferBridgeStoreHint(source.bridge_store ?? source.bridge_target),
+      bridgeStoreHint: inferBridgeStoreHint(
+        source.bridge_store ?? source.bridge_target,
+      ),
     });
   }
   return out;
@@ -1001,8 +1154,16 @@ function normalizeLearningEntries(
 function resolveBridgeStore(learning: NormalizedLearning): BridgeStoreType {
   if (learning.bridgeStoreHint) return learning.bridgeStoreHint;
   if (learning.category === "workflow") return "workflow-library";
-  if (learning.category === "decision" || learning.category === "approval_request") return "decision-log";
-  if (learning.category === "learning" && learning.bridgeStoreHint === "session-postmortem") return "session-postmortem";
+  if (
+    learning.category === "decision" ||
+    learning.category === "approval_request"
+  )
+    return "decision-log";
+  if (
+    learning.category === "learning" &&
+    learning.bridgeStoreHint === "session-postmortem"
+  )
+    return "session-postmortem";
   return "knowledge-distiller";
 }
 
@@ -1016,26 +1177,38 @@ function bridgeLearningToMottoSkills(
   const metadata = learning.metadata;
   let result: Record<string, unknown>;
   if (storeType === "workflow-library") {
-    const workflowName = asOptionalString(metadata.workflow_name)
-      ?? asOptionalString(metadata.name)
-      ?? `${correlationId.toLowerCase()}-workflow-${learning.index + 1}`;
-    const workflowSteps = asArray(metadata.steps)
-      .map((step, stepIndex) => {
-        const s = asRecord(step);
-        const name = asOptionalString(s.name) ?? asOptionalString(s.step) ?? `step-${stepIndex + 1}`;
-        return {
-          order: stepIndex + 1,
-          name,
-          description: asOptionalString(s.description) ?? undefined,
-        };
-      });
+    const workflowName =
+      asOptionalString(metadata.workflow_name) ??
+      asOptionalString(metadata.name) ??
+      `${correlationId.toLowerCase()}-workflow-${learning.index + 1}`;
+    const workflowSteps = asArray(metadata.steps).map((step, stepIndex) => {
+      const s = asRecord(step);
+      const name =
+        asOptionalString(s.name) ??
+        asOptionalString(s.step) ??
+        `step-${stepIndex + 1}`;
+      return {
+        order: stepIndex + 1,
+        name,
+        description: asOptionalString(s.description) ?? undefined,
+      };
+    });
     const template = {
       name: workflowName,
       description: learning.content,
-      steps: workflowSteps.length > 0
-        ? workflowSteps
-        : [{ order: 1, name: "review-learning", description: "Review and apply the captured learning." }],
-      tags: asArray(metadata.tags).filter((tag): tag is string => typeof tag === "string"),
+      steps:
+        workflowSteps.length > 0
+          ? workflowSteps
+          : [
+              {
+                order: 1,
+                name: "review-learning",
+                description: "Review and apply the captured learning.",
+              },
+            ],
+      tags: asArray(metadata.tags).filter(
+        (tag): tag is string => typeof tag === "string",
+      ),
       extracted_from: [correlationId],
       source: metadata.source ?? "hermes",
       correlation_id: correlationId,
@@ -1045,10 +1218,13 @@ function bridgeLearningToMottoSkills(
   } else if (storeType === "decision-log") {
     const decision = {
       domain: asOptionalString(metadata.domain) ?? "hermes",
-      question: asOptionalString(metadata.question) ?? `Learning decision ${correlationId} #${learning.index + 1}`,
+      question:
+        asOptionalString(metadata.question) ??
+        `Learning decision ${correlationId} #${learning.index + 1}`,
       chosen: asOptionalString(metadata.chosen) ?? learning.content,
       rationale: asOptionalString(metadata.rationale) ?? learning.content,
-      decision_class: asOptionalString(metadata.decision_class) ?? "hermes_learning_bridge",
+      decision_class:
+        asOptionalString(metadata.decision_class) ?? "hermes_learning_bridge",
       outcome: asOptionalString(metadata.outcome) ?? "recorded",
       session_id: correlationId,
       correlation_id: correlationId,
@@ -1057,14 +1233,18 @@ function bridgeLearningToMottoSkills(
     result = executeMottoSkillsTool("decision_log.py", "log", decision);
   } else {
     const domain = asOptionalString(metadata.domain) ?? "hermes";
-    const key = asOptionalString(metadata.key) ?? `learning-${correlationId}-${learning.index + 1}`;
+    const key =
+      asOptionalString(metadata.key) ??
+      `learning-${correlationId}-${learning.index + 1}`;
     const fact = {
       domain,
       key,
       fact: learning.content,
       confidence: normalizeConfidence(metadata.confidence, "medium"),
       source: metadata.source ?? "hermes",
-      tags: asArray(metadata.tags).filter((tag): tag is string => typeof tag === "string"),
+      tags: asArray(metadata.tags).filter(
+        (tag): tag is string => typeof tag === "string",
+      ),
       correlation_id: correlationId,
       run_id: runId,
     };
@@ -1072,11 +1252,12 @@ function bridgeLearningToMottoSkills(
   }
 
   const item = asRecord(result.item);
-  const recordId = asOptionalString(result.id)
-    ?? asOptionalString(item.id)
-    ?? asOptionalString(item.name)
-    ?? asOptionalString(item.key)
-    ?? `${correlationId}-${learning.index + 1}`;
+  const recordId =
+    asOptionalString(result.id) ??
+    asOptionalString(item.id) ??
+    asOptionalString(item.name) ??
+    asOptionalString(item.key) ??
+    `${correlationId}-${learning.index + 1}`;
   const action = asOptionalString(result.action) ?? "upserted";
   return {
     store_type: storeType,
@@ -1097,12 +1278,15 @@ async function ingestCompletedLocalTasks(args: {
   observedAt: string;
   limit?: number;
 }): Promise<LocalTaskOutcome[]> {
-  const summaries = asArray(await FLEET_CONTROL_PLANE.listLocalTasks({ limit: args.limit ?? 50 }))
-    .map((entry) => asRecord(entry));
+  const summaries = asArray(
+    await FLEET_CONTROL_PLANE.listLocalTasks({ limit: args.limit ?? 50 }),
+  ).map((entry) => asRecord(entry));
   const completedSummaries = summaries.filter((entry) => {
     const status = (asOptionalString(entry.status) ?? "").toLowerCase();
-    return ["succeeded", "failed", "cancelled"].includes(status)
-      && (asOptionalString(entry.source) ?? "") === FLEET_AGENT_NAME;
+    return (
+      ["succeeded", "failed", "cancelled"].includes(status) &&
+      (asOptionalString(entry.source) ?? "") === FLEET_AGENT_NAME
+    );
   });
 
   const outcomes: LocalTaskOutcome[] = [];
@@ -1116,17 +1300,33 @@ async function ingestCompletedLocalTasks(args: {
     const payload = asRecord(detail.payload ?? asRecord(detail).payload);
     const taskCorrelationId = asOptionalString(payload.correlation_id);
     const taskRunId = asOptionalString(payload.run_id);
-    const status = (asOptionalString(detail.status) ?? asOptionalString(summary.status) ?? "unknown").toLowerCase();
-    const kind = asOptionalString(detail.kind) ?? asOptionalString(summary.kind) ?? "local";
-    const finishedAt = asOptionalString(detail.finished_at) ?? asOptionalString(summary.finished_at);
-    const errorText = asOptionalString(detail.error) ?? asOptionalString(summary.error) ?? undefined;
+    const status = (
+      asOptionalString(detail.status) ??
+      asOptionalString(summary.status) ??
+      "unknown"
+    ).toLowerCase();
+    const kind =
+      asOptionalString(detail.kind) ??
+      asOptionalString(summary.kind) ??
+      "local";
+    const finishedAt =
+      asOptionalString(detail.finished_at) ??
+      asOptionalString(summary.finished_at);
+    const errorText =
+      asOptionalString(detail.error) ??
+      asOptionalString(summary.error) ??
+      undefined;
     const resultPayload = parseMetadata(detail.result);
-    const outcomeCategory: TypedMemoryCategory = status === "succeeded"
-      ? (kind.includes("browser") ? "workflow" : "learning")
-      : "capability_gap";
-    const content = status === "succeeded"
-      ? `Completed local task ${taskId} (${kind}) for objective "${args.objective}".`
-      : `Local task ${taskId} (${kind}) finished with status "${status}".`;
+    const outcomeCategory: TypedMemoryCategory =
+      status === "succeeded"
+        ? kind.includes("browser")
+          ? "workflow"
+          : "learning"
+        : "capability_gap";
+    const content =
+      status === "succeeded"
+        ? `Completed local task ${taskId} (${kind}) for objective "${args.objective}".`
+        : `Local task ${taskId} (${kind}) finished with status "${status}".`;
     const stored = storeTypedMemoryRecord({
       category: outcomeCategory,
       content,
@@ -1188,7 +1388,10 @@ async function ensureFleetRegistered(): Promise<void> {
   }
 }
 
-async function sendFleetHeartbeat(mode: string, currentProcessFocus: string): Promise<void> {
+async function sendFleetHeartbeat(
+  mode: string,
+  currentProcessFocus: string,
+): Promise<void> {
   const status = buildHeartbeatStatus(mode, currentProcessFocus);
   await FLEET_CONTROL_PLANE.heartbeat(FLEET_AGENT_NAME, status);
   if (mode === "startup") {
@@ -1197,14 +1400,23 @@ async function sendFleetHeartbeat(mode: string, currentProcessFocus: string): Pr
 }
 
 async function ensureFleetStartupLifecycle(): Promise<void> {
-  if (fleetLifecycleState.startupAttempted && fleetLifecycleState.startupHeartbeatAt) return;
+  if (
+    fleetLifecycleState.startupAttempted &&
+    fleetLifecycleState.startupHeartbeatAt
+  )
+    return;
   const correlationId = normalizeCorrelationId("STARTUP");
   fleetLifecycleState.startupAttempted = true;
   try {
     await ensureFleetRegistered();
     await sendFleetHeartbeat("startup", "service_bootstrap");
   } catch (error) {
-    queueFleetRetry("startup_registration_or_heartbeat", correlationId, null, error);
+    queueFleetRetry(
+      "startup_registration_or_heartbeat",
+      correlationId,
+      null,
+      error,
+    );
   }
 }
 
@@ -1220,7 +1432,10 @@ function buildStructuredPlan(
   const capabilityGaps = asArray(args.capability_gaps);
   const intentIds = consumedInboundIntents
     .map((intent) => asRecord(intent).intent_id)
-    .filter((intentId): intentId is string => typeof intentId === "string" && intentId.length > 0);
+    .filter(
+      (intentId): intentId is string =>
+        typeof intentId === "string" && intentId.length > 0,
+    );
   const planInput = args.plan;
   if (planInput && typeof planInput === "object" && !Array.isArray(planInput)) {
     return {
@@ -1249,11 +1464,35 @@ function buildStructuredPlan(
     inbound_intent_ids: intentIds,
     bridged_knowledge_references: recalledBridgeReferences,
     next_steps: [
-      { step: "Review observations", count: observations.length, priority: "high", status: "ready" },
-      { step: "Process inbound intents", count: intentIds.length, priority: "high", status: intentIds.length > 0 ? "ready" : "none" },
-      { step: "Execute proposed actions", count: proposedActions.length, priority: "high", status: "awaiting_approval" },
-      { step: "Address capability gaps", count: capabilityGaps.length, priority: "medium", status: "blocked" },
-      { step: "Capture learning outcomes", priority: "medium", status: "ready" },
+      {
+        step: "Review observations",
+        count: observations.length,
+        priority: "high",
+        status: "ready",
+      },
+      {
+        step: "Process inbound intents",
+        count: intentIds.length,
+        priority: "high",
+        status: intentIds.length > 0 ? "ready" : "none",
+      },
+      {
+        step: "Execute proposed actions",
+        count: proposedActions.length,
+        priority: "high",
+        status: "awaiting_approval",
+      },
+      {
+        step: "Address capability gaps",
+        count: capabilityGaps.length,
+        priority: "medium",
+        status: "blocked",
+      },
+      {
+        step: "Capture learning outcomes",
+        priority: "medium",
+        status: "ready",
+      },
     ],
   };
 }
@@ -1263,16 +1502,20 @@ function buildStructuredPlan(
 const tools: Tool[] = [
   {
     name: "research",
-    description: "Deep research using Perplexity Sonar Pro. Returns thorough answers with citations.",
+    description:
+      "Deep research using Perplexity Sonar Pro. Returns thorough answers with citations.",
     inputSchema: {
       type: "object",
-      properties: { query: { type: "string", description: "Research question or topic" } },
+      properties: {
+        query: { type: "string", description: "Research question or topic" },
+      },
       required: ["query"],
     },
   },
   {
     name: "vps_info",
-    description: "Get detailed information about the Hostinger VPS including state, resources, IPs, and configuration.",
+    description:
+      "Get detailed information about the Hostinger VPS including state, resources, IPs, and configuration.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -1280,7 +1523,13 @@ const tools: Tool[] = [
     description: "Get CPU, RAM, and disk usage metrics for the VPS.",
     inputSchema: {
       type: "object",
-      properties: { days: { type: "number", description: "Days of metrics (default 1)", default: 1 } },
+      properties: {
+        days: {
+          type: "number",
+          description: "Days of metrics (default 1)",
+          default: 1,
+        },
+      },
     },
   },
   {
@@ -1330,16 +1579,27 @@ const tools: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Project name (alphanumeric, dashes, underscores)" },
-        compose_content: { type: "string", description: "Docker Compose YAML content, or URL to docker-compose.yml/GitHub repo" },
-        environment: { type: "string", description: "Environment variables (KEY=VALUE, one per line)" },
+        name: {
+          type: "string",
+          description: "Project name (alphanumeric, dashes, underscores)",
+        },
+        compose_content: {
+          type: "string",
+          description:
+            "Docker Compose YAML content, or URL to docker-compose.yml/GitHub repo",
+        },
+        environment: {
+          type: "string",
+          description: "Environment variables (KEY=VALUE, one per line)",
+        },
       },
       required: ["name", "compose_content"],
     },
   },
   {
     name: "vps_snapshot",
-    description: "Create a VPS snapshot for backup. Overwrites any existing snapshot.",
+    description:
+      "Create a VPS snapshot for backup. Overwrites any existing snapshot.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -1349,16 +1609,21 @@ const tools: Tool[] = [
   },
   {
     name: "memory_store",
-    description: "Store typed knowledge in persistent memory with traceability metadata.",
+    description:
+      "Store typed knowledge in persistent memory with traceability metadata.",
     inputSchema: {
       type: "object",
       properties: {
         category: {
           type: "string",
-          description: "Typed category: fact, decision, project, learning, workflow, observation, capability_gap, approval_request, or validation.",
+          description:
+            "Typed category: fact, decision, project, learning, workflow, observation, capability_gap, approval_request, or validation.",
         },
         content: { type: "string", description: "Content to remember" },
-        metadata: { type: "object", description: "Optional structured metadata" },
+        metadata: {
+          type: "object",
+          description: "Optional structured metadata",
+        },
       },
       required: ["category", "content"],
     },
@@ -1371,74 +1636,136 @@ const tools: Tool[] = [
       properties: {
         category: { type: "string", description: "Filter by category" },
         query: { type: "string", description: "Search term in content" },
-        limit: { type: "number", description: "Max results (default 20)", default: 20 },
+        limit: {
+          type: "number",
+          description: "Max results (default 20)",
+          default: 20,
+        },
       },
     },
   },
   {
     name: "plan",
-    description: "Create a structured execution plan using Perplexity research. Stores the plan in memory.",
+    description:
+      "Create a structured execution plan using Perplexity research. Stores the plan in memory.",
     inputSchema: {
       type: "object",
       properties: {
         goal: { type: "string", description: "The high-level goal" },
-        context: { type: "string", description: "Additional context or constraints" },
+        context: {
+          type: "string",
+          description: "Additional context or constraints",
+        },
       },
       required: ["goal"],
     },
   },
   {
     name: "perplexity_ingest",
-    description: "Ingest Perplexity research context (queries, threads, findings) into Hermes observation memory for shadow learning. Push-based fallback when direct Perplexity activity API is unavailable. Allows Hermes to watch and learn from user research activity across Perplexity threads.",
+    description:
+      "Ingest Perplexity research context (queries, threads, findings) into Hermes observation memory for shadow learning. Push-based fallback when direct Perplexity activity API is unavailable. Allows Hermes to watch and learn from user research activity across Perplexity threads.",
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string", description: "Perplexity thread/conversation identifier." },
-        query: { type: "string", description: "The research question or topic queried in Perplexity." },
-        findings: { type: "string", description: "Key findings, answers, or summary from the Perplexity research output." },
-        context: { type: "string", description: "Additional context about the research session or purpose." },
-        source_url: { type: "string", description: "URL to the Perplexity thread or source (if available)." },
-        correlation_id: { type: "string", description: "Optional correlation ID for traceability." },
-        tags: { type: "array", items: { type: "string" }, description: "Optional tags for categorization." },
+        thread_id: {
+          type: "string",
+          description: "Perplexity thread/conversation identifier.",
+        },
+        query: {
+          type: "string",
+          description: "The research question or topic queried in Perplexity.",
+        },
+        findings: {
+          type: "string",
+          description:
+            "Key findings, answers, or summary from the Perplexity research output.",
+        },
+        context: {
+          type: "string",
+          description:
+            "Additional context about the research session or purpose.",
+        },
+        source_url: {
+          type: "string",
+          description: "URL to the Perplexity thread or source (if available).",
+        },
+        correlation_id: {
+          type: "string",
+          description: "Optional correlation ID for traceability.",
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional tags for categorization.",
+        },
       },
       required: ["query"],
     },
   },
   {
     name: "business_management_cycle",
-    description: "Run a structured business-management cycle that writes fleet run boundaries, heartbeats, events, and artifacts.",
+    description:
+      "Run a structured business-management cycle that writes fleet run boundaries, heartbeats, events, and artifacts.",
     inputSchema: {
       type: "object",
       properties: {
-        objective: { type: "string", description: "Cycle objective or focus area." },
-        correlation_id: { type: "string", description: "Validation correlation ID shared across all generated fleet records." },
-        observations: { type: "array", items: { type: "object" }, description: "Observed business signals for this cycle." },
-        plan: { type: "object", description: "Optional structured plan payload. If omitted, Hermes synthesizes one." },
-        proposed_actions: { type: "array", items: { type: "object" }, description: "Proposed actions for this cycle." },
-        capability_gaps: { type: "array", items: { type: "object" }, description: "Capability blockers and missing prerequisites." },
+        objective: {
+          type: "string",
+          description: "Cycle objective or focus area.",
+        },
+        correlation_id: {
+          type: "string",
+          description:
+            "Validation correlation ID shared across all generated fleet records.",
+        },
+        observations: {
+          type: "array",
+          items: { type: "object" },
+          description: "Observed business signals for this cycle.",
+        },
+        plan: {
+          type: "object",
+          description:
+            "Optional structured plan payload. If omitted, Hermes synthesizes one.",
+        },
+        proposed_actions: {
+          type: "array",
+          items: { type: "object" },
+          description: "Proposed actions for this cycle.",
+        },
+        capability_gaps: {
+          type: "array",
+          items: { type: "object" },
+          description: "Capability blockers and missing prerequisites.",
+        },
         coordination_intents: {
           type: "array",
           items: { type: "object" },
-          description: "Cross-agent intents to emit via signal_intent (target_agent, kind, payload?, source_agent?).",
+          description:
+            "Cross-agent intents to emit via signal_intent (target_agent, kind, payload?, source_agent?).",
         },
         local_tasks: {
           type: "array",
           items: { type: "object" },
-          description: "Local/browser/authenticated work requests queued via queue_local_task.",
+          description:
+            "Local/browser/authenticated work requests queued via queue_local_task.",
         },
         capability_requests: {
           type: "array",
           items: { type: "object" },
-          description: "Missing credential/tool/session requests sent via request_capability.",
+          description:
+            "Missing credential/tool/session requests sent via request_capability.",
         },
         consume_intents_limit: {
           type: "number",
-          description: "Maximum open intents Hermes should consume for this cycle (default 10).",
+          description:
+            "Maximum open intents Hermes should consume for this cycle (default 10).",
           default: 10,
         },
         simulate_failures: {
           type: "object",
-          description: "Validation-only failure simulation. fleet_operations/fleet_sections trigger pending retries; knowledge_store simulates memory write failure.",
+          description:
+            "Validation-only failure simulation. fleet_operations/fleet_sections trigger pending retries; knowledge_store simulates memory write failure.",
           properties: {
             fleet_operations: { type: "array", items: { type: "string" } },
             fleet_sections: { type: "array", items: { type: "string" } },
@@ -1452,22 +1779,36 @@ const tools: Tool[] = [
           ],
           description: "Validation evidence entries tied to this cycle.",
         },
-        learnings: { type: "array", items: { type: "object" }, description: "Learnings captured from the cycle." },
-        pending_approvals: { type: "number", description: "Count of pending approvals associated with the cycle." },
-        blocked_capabilities: { type: "array", items: { type: "string" }, description: "Currently blocked capabilities for heartbeat metadata." },
+        learnings: {
+          type: "array",
+          items: { type: "object" },
+          description: "Learnings captured from the cycle.",
+        },
+        pending_approvals: {
+          type: "number",
+          description: "Count of pending approvals associated with the cycle.",
+        },
+        blocked_capabilities: {
+          type: "array",
+          items: { type: "string" },
+          description: "Currently blocked capabilities for heartbeat metadata.",
+        },
         ingest_completed_local_tasks: {
           type: "boolean",
-          description: "When true (default), Hermes ingests completed local task outcomes into typed memory learnings.",
+          description:
+            "When true (default), Hermes ingests completed local task outcomes into typed memory learnings.",
           default: true,
         },
         local_task_ingest_limit: {
           type: "number",
-          description: "Maximum completed local tasks to scan for ingestion in this cycle (default 50).",
+          description:
+            "Maximum completed local tasks to scan for ingestion in this cycle (default 50).",
           default: 50,
         },
         recall_bridged_limit: {
           type: "number",
-          description: "How many recent motto-skills bridge records to include in recalled plan context (default 10).",
+          description:
+            "How many recent motto-skills bridge records to include in recalled plan context (default 10).",
           default: 10,
         },
       },
@@ -1476,41 +1817,76 @@ const tools: Tool[] = [
   },
   {
     name: "fleet_get_run_details",
-    description: "Retrieve a fleet run and parse structured artifact bodies recorded by Hermes.",
+    description:
+      "Retrieve a fleet run and parse structured artifact bodies recorded by Hermes.",
     inputSchema: {
       type: "object",
       properties: {
-        run_id: { type: "string", description: "Fleet run UUID to fetch via the control plane." },
+        run_id: {
+          type: "string",
+          description: "Fleet run UUID to fetch via the control plane.",
+        },
       },
       required: ["run_id"],
     },
   },
   {
     name: "business_pm_loop",
-    description: "Canonical Hermes business PM loop invocation returning structured perceive/recall/plan/propose/learn output. Uses seeded memory/workflow/decision context, persists outcomes as learning and decision records, risk-classifies proposed actions, blocks unsafe actions without approval, and generates a business status report.",
+    description:
+      "Canonical Hermes business PM loop invocation returning structured perceive/recall/plan/propose/learn output. Uses seeded memory/workflow/decision context, persists outcomes as learning and decision records, risk-classifies proposed actions, blocks unsafe actions without approval, and generates a business status report.",
     inputSchema: {
       type: "object",
       properties: {
-        objective: { type: "string", description: "Business operations objective or focus area for this loop iteration." },
-        correlation_id: { type: "string", description: "Validation correlation ID shared across all generated records." },
-        observations: { type: "array", items: { type: "object" }, description: "Observed business signals and process observations for the perceive phase." },
+        objective: {
+          type: "string",
+          description:
+            "Business operations objective or focus area for this loop iteration.",
+        },
+        correlation_id: {
+          type: "string",
+          description:
+            "Validation correlation ID shared across all generated records.",
+        },
+        observations: {
+          type: "array",
+          items: { type: "object" },
+          description:
+            "Observed business signals and process observations for the perceive phase.",
+        },
         required_signals: {
           type: "array",
           items: { type: "string" },
-          description: "Signal names required for this cycle. Missing signals are marked unknown/blocked and become capability requests.",
+          description:
+            "Signal names required for this cycle. Missing signals are marked unknown/blocked and become capability requests.",
         },
         workflow_trace: {
           type: "object",
-          description: "Optional workflow trace payload to convert into workflow candidates, handoffs, and capability gaps.",
+          description:
+            "Optional workflow trace payload to convert into workflow candidates, handoffs, and capability gaps.",
         },
         workflow_traces: {
           type: "array",
           items: { type: "object" },
-          description: "Optional list of workflow trace payloads to convert into reusable process knowledge.",
+          description:
+            "Optional list of workflow trace payloads to convert into reusable process knowledge.",
         },
-        proposed_actions: { type: "array", items: { type: "object" }, description: "Proposed business actions for risk classification and approval gating." },
-        capability_gaps: { type: "array", items: { type: "object" }, description: "Known capability blockers and missing prerequisites." },
-        learnings: { type: "array", items: { type: "object" }, description: "Learnings captured from the cycle to persist as learning and decision records." },
+        proposed_actions: {
+          type: "array",
+          items: { type: "object" },
+          description:
+            "Proposed business actions for risk classification and approval gating.",
+        },
+        capability_gaps: {
+          type: "array",
+          items: { type: "object" },
+          description: "Known capability blockers and missing prerequisites.",
+        },
+        learnings: {
+          type: "array",
+          items: { type: "object" },
+          description:
+            "Learnings captured from the cycle to persist as learning and decision records.",
+        },
         validation_evidence: {
           oneOf: [
             { type: "array", items: { type: "object" } },
@@ -1526,12 +1902,14 @@ const tools: Tool[] = [
         local_tasks: {
           type: "array",
           items: { type: "object" },
-          description: "Local/browser/authenticated work requests queued via queue_local_task.",
+          description:
+            "Local/browser/authenticated work requests queued via queue_local_task.",
         },
         capability_requests: {
           type: "array",
           items: { type: "object" },
-          description: "Missing credential/tool/session requests sent via request_capability.",
+          description:
+            "Missing credential/tool/session requests sent via request_capability.",
         },
         consume_intents_limit: {
           type: "number",
@@ -1541,20 +1919,24 @@ const tools: Tool[] = [
         recall_categories: {
           type: "array",
           items: { type: "string" },
-          description: "Memory categories to recall for the recall phase. Default: decision, workflow, fact, project, learning, capability_gap.",
+          description:
+            "Memory categories to recall for the recall phase. Default: decision, workflow, fact, project, learning, capability_gap.",
         },
         recall_query: {
           type: "string",
-          description: "Optional search query for memory recall. Defaults to the objective.",
+          description:
+            "Optional search query for memory recall. Defaults to the objective.",
         },
         recall_limit: {
           type: "number",
-          description: "Maximum memory records to recall per category (default 10).",
+          description:
+            "Maximum memory records to recall per category (default 10).",
           default: 10,
         },
         ingest_completed_local_tasks: {
           type: "boolean",
-          description: "When true (default), ingest completed local task outcomes into typed memory learnings.",
+          description:
+            "When true (default), ingest completed local task outcomes into typed memory learnings.",
           default: true,
         },
         local_task_ingest_limit: {
@@ -1565,11 +1947,13 @@ const tools: Tool[] = [
         simulated_local_task_outcomes: {
           type: "array",
           items: { type: "object" },
-          description: "Optional validation-only local/browser task outcomes to ingest into learning and planning when live task completion is unavailable.",
+          description:
+            "Optional validation-only local/browser task outcomes to ingest into learning and planning when live task completion is unavailable.",
         },
         recall_bridged_limit: {
           type: "number",
-          description: "How many recent motto-skills bridge records to include (default 10).",
+          description:
+            "How many recent motto-skills bridge records to include (default 10).",
           default: 10,
         },
         simulate_failures: {
@@ -1581,118 +1965,216 @@ const tools: Tool[] = [
             knowledge_store: { type: "boolean" },
           },
         },
-        pending_approvals: { type: "number", description: "Count of pending approvals associated with the cycle." },
-        blocked_capabilities: { type: "array", items: { type: "string" }, description: "Currently blocked capabilities for heartbeat metadata." },
+        pending_approvals: {
+          type: "number",
+          description: "Count of pending approvals associated with the cycle.",
+        },
+        blocked_capabilities: {
+          type: "array",
+          items: { type: "string" },
+          description: "Currently blocked capabilities for heartbeat metadata.",
+        },
       },
       required: ["objective"],
     },
   },
   {
     name: "business_status_report",
-    description: "Generate a high-level business operations status report summarizing current process focus, observed signals, active projects/workflows, pending approvals, blocked capabilities, risks, and recommended next steps.",
+    description:
+      "Generate a high-level business operations status report summarizing current process focus, observed signals, active projects/workflows, pending approvals, blocked capabilities, risks, and recommended next steps.",
     inputSchema: {
       type: "object",
       properties: {
-        focus: { type: "string", description: "Current process focus area (defaults to last cycle objective)." },
-        correlation_id: { type: "string", description: "Optional validation correlation ID." },
+        focus: {
+          type: "string",
+          description:
+            "Current process focus area (defaults to last cycle objective).",
+        },
+        correlation_id: {
+          type: "string",
+          description: "Optional validation correlation ID.",
+        },
       },
     },
   },
   {
     name: "perplexity_shadow_status",
-    description: "Retrieve recent Perplexity shadow observations from Hermes memory. Surfaces what Hermes has learned from Perplexity research activity, including queries, threads, findings, and derived awareness. Read-only diagnostic tool for Perplexity shadow listener.",
+    description:
+      "Retrieve recent Perplexity shadow observations from Hermes memory. Surfaces what Hermes has learned from Perplexity research activity, including queries, threads, findings, and derived awareness. Read-only diagnostic tool for Perplexity shadow listener.",
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "number", description: "Maximum recent Perplexity observations to return (default 20).", default: 20 },
-        correlation_id: { type: "string", description: "Optional correlation ID for traceability." },
+        limit: {
+          type: "number",
+          description:
+            "Maximum recent Perplexity observations to return (default 20).",
+          default: 20,
+        },
+        correlation_id: {
+          type: "string",
+          description: "Optional correlation ID for traceability.",
+        },
       },
     },
   },
   {
     name: "factory_list_sessions",
-    description: "List recent Factory Droid sessions for cross-session awareness.",
+    description:
+      "List recent Factory Droid sessions for cross-session awareness.",
     inputSchema: {
       type: "object",
-      properties: { limit: { type: "number", description: "Max sessions (default 10)", default: 10 } },
+      properties: {
+        limit: {
+          type: "number",
+          description: "Max sessions (default 10)",
+          default: 10,
+        },
+      },
     },
   },
   {
     name: "factory_get_session",
-    description: "Get a Factory Droid session by ID, optionally including message history.",
+    description:
+      "Get a Factory Droid session by ID, optionally including message history.",
     inputSchema: {
       type: "object",
       properties: {
         session_id: { type: "string", description: "Factory session ID" },
-        include_messages: { type: "boolean", description: "Include message history" },
-        message_limit: { type: "number", description: "Max messages (default 50)", default: 50 },
+        include_messages: {
+          type: "boolean",
+          description: "Include message history",
+        },
+        message_limit: {
+          type: "number",
+          description: "Max messages (default 50)",
+          default: 50,
+        },
       },
       required: ["session_id"],
     },
   },
   {
     name: "factory_sync_sessions",
-    description: "Read synchronized status across multiple Factory Droid sessions, with optional latest message snapshots.",
+    description:
+      "Read synchronized status across multiple Factory Droid sessions, with optional latest message snapshots.",
     inputSchema: {
       type: "object",
       properties: {
-        session_ids: { type: "array", items: { type: "string" }, description: "Explicit session IDs to inspect. If omitted, Hermes uses recent sessions." },
-        limit: { type: "number", description: "When session_ids is omitted, how many recent sessions to inspect (default 10).", default: 10 },
-        include_messages: { type: "boolean", description: "Include latest messages in response (default false)." },
-        message_limit: { type: "number", description: "Messages to fetch per session when include_messages=true (default 20).", default: 20 },
+        session_ids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Explicit session IDs to inspect. If omitted, Hermes uses recent sessions.",
+        },
+        limit: {
+          type: "number",
+          description:
+            "When session_ids is omitted, how many recent sessions to inspect (default 10).",
+          default: 10,
+        },
+        include_messages: {
+          type: "boolean",
+          description: "Include latest messages in response (default false).",
+        },
+        message_limit: {
+          type: "number",
+          description:
+            "Messages to fetch per session when include_messages=true (default 20).",
+          default: 20,
+        },
         completion_keywords: {
           type: "array",
           items: { type: "string" },
-          description: "Optional keywords indicating completion in latest assistant output.",
+          description:
+            "Optional keywords indicating completion in latest assistant output.",
         },
         min_confidence: {
           type: "number",
-          description: "Optional completion confidence threshold (0-1, or 0-100 percent) applied to latest assistant output.",
+          description:
+            "Optional completion confidence threshold (0-1, or 0-100 percent) applied to latest assistant output.",
         },
         require_citations: {
           type: "boolean",
-          description: "When true, completion requires at least one citation URL in latest assistant output.",
+          description:
+            "When true, completion requires at least one citation URL in latest assistant output.",
         },
       },
     },
   },
   {
     name: "factory_autoloop",
-    description: "Autonomous multi-session sync loop, checks session progress, broadcasts follow-up prompts, and repeats until completion criteria are met.",
+    description:
+      "Autonomous multi-session sync loop, checks session progress, broadcasts follow-up prompts, and repeats until completion criteria are met.",
     inputSchema: {
       type: "object",
       properties: {
-        session_ids: { type: "array", items: { type: "string" }, description: "Factory session IDs to orchestrate." },
-        objective: { type: "string", description: "Shared objective all sessions should complete." },
-        desired_effect: { type: "string", description: "Success criteria checked against session outputs." },
+        session_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Factory session IDs to orchestrate.",
+        },
+        objective: {
+          type: "string",
+          description: "Shared objective all sessions should complete.",
+        },
+        desired_effect: {
+          type: "string",
+          description: "Success criteria checked against session outputs.",
+        },
         reprompt_template: {
           type: "string",
-          description: "Optional custom prompt template. Supports {objective}, {desired_effect}, {round}, {max_rounds}, {session_id}, {status}, {latest_summary}, {min_confidence}, {require_citations}, {completion_gate_reason}.",
+          description:
+            "Optional custom prompt template. Supports {objective}, {desired_effect}, {round}, {max_rounds}, {session_id}, {status}, {latest_summary}, {min_confidence}, {require_citations}, {completion_gate_reason}.",
         },
-        max_rounds: { type: "number", description: "Maximum orchestration rounds (default 3, max 12).", default: 3 },
-        poll_delay_ms: { type: "number", description: "Delay between rounds in milliseconds (default 1500).", default: 1500 },
-        include_messages: { type: "boolean", description: "Include session messages in output (default false)." },
-        message_limit: { type: "number", description: "Messages to fetch per session each round (default 20).", default: 20 },
+        max_rounds: {
+          type: "number",
+          description: "Maximum orchestration rounds (default 3, max 12).",
+          default: 3,
+        },
+        poll_delay_ms: {
+          type: "number",
+          description: "Delay between rounds in milliseconds (default 1500).",
+          default: 1500,
+        },
+        include_messages: {
+          type: "boolean",
+          description: "Include session messages in output (default false).",
+        },
+        message_limit: {
+          type: "number",
+          description: "Messages to fetch per session each round (default 20).",
+          default: 20,
+        },
         completion_keywords: {
           type: "array",
           items: { type: "string" },
-          description: "Completion keywords searched in latest assistant output.",
+          description:
+            "Completion keywords searched in latest assistant output.",
         },
         min_confidence: {
           type: "number",
-          description: "Optional completion confidence threshold (0-1, or 0-100 percent) applied before accepting completion.",
+          description:
+            "Optional completion confidence threshold (0-1, or 0-100 percent) applied before accepting completion.",
         },
         require_citations: {
           type: "boolean",
-          description: "When true, completion requires at least one citation URL in latest assistant output.",
+          description:
+            "When true, completion requires at least one citation URL in latest assistant output.",
         },
         push_to_perplexity_shadow: {
           type: "boolean",
-          description: "When true (default), each round is ingested into Perplexity shadow memory for awareness continuity.",
+          description:
+            "When true (default), each round is ingested into Perplexity shadow memory for awareness continuity.",
           default: true,
         },
-        computer_id: { type: "string", description: "Optional computer ID when posting follow-up messages." },
-        correlation_id: { type: "string", description: "Optional correlation ID for traceability." },
+        computer_id: {
+          type: "string",
+          description: "Optional computer ID when posting follow-up messages.",
+        },
+        correlation_id: {
+          type: "string",
+          description: "Optional correlation ID for traceability.",
+        },
       },
       required: ["session_ids", "objective"],
     },
@@ -1704,7 +2186,10 @@ const tools: Tool[] = [
       type: "object",
       properties: {
         title: { type: "string", description: "Mission title" },
-        description: { type: "string", description: "Mission description and goal" },
+        description: {
+          type: "string",
+          description: "Mission description and goal",
+        },
         repository: { type: "string", description: "Git repository URL" },
         branch: { type: "string", description: "Target branch" },
       },
@@ -1713,28 +2198,59 @@ const tools: Tool[] = [
   },
   {
     name: "sfrep_context_transport",
-    description: "Transport extracted property facts into an SFREP/Appraise-It payload. Reads facts.json and engagement_facts.json from a workfile, uses AI (Groq/Gemma) to map canonical keys to SFREP field IDs, and writes sfrep/payload.json. Falls back to deterministic mapping if no GROQ_API_KEY is available.",
+    description:
+      "Transport extracted property facts into an SFREP/Appraise-It payload. Reads facts.json and engagement_facts.json from a workfile, uses AI (Groq/Gemma) to map canonical keys to SFREP field IDs, and writes sfrep/payload.json. Falls back to deterministic mapping if no GROQ_API_KEY is available.",
     inputSchema: {
       type: "object",
       properties: {
-        workfile_path: { type: "string", description: "Absolute path to the workfile directory containing extracted/ subdirectory" },
-        form_id: { type: "string", description: "Optional target form ID (e.g., FNMA-2055-0911) for catalog-aware mapping" },
-        groq_model: { type: "string", description: "Groq model to use (default: gemma2-9b-it)" },
+        workfile_path: {
+          type: "string",
+          description:
+            "Absolute path to the workfile directory containing extracted/ subdirectory",
+        },
+        form_id: {
+          type: "string",
+          description:
+            "Optional target form ID (e.g., FNMA-2055-0911) for catalog-aware mapping",
+        },
+        groq_model: {
+          type: "string",
+          description: "Groq model to use (default: gemma2-9b-it)",
+        },
       },
       required: ["workfile_path"],
     },
   },
   {
     name: "sfrep_autonomous_handoff",
-    description: "Autonomous SFREP context transport with iterative verification. Runs up to max_attempts (default 3, max 5) of AI-powered field mapping, analyzing each result for completeness and correctness. Handles conflicts, missing fields, and type mismatches. Writes the best payload to sfrep/payload.json. Returns full diagnostics including attempt log, warnings, and readiness status.",
+    description:
+      "Autonomous SFREP context transport with iterative verification. Runs up to max_attempts (default 3, max 5) of AI-powered field mapping, analyzing each result for completeness and correctness. Handles conflicts, missing fields, and type mismatches. Writes the best payload to sfrep/payload.json. Returns full diagnostics including attempt log, warnings, and readiness status.",
     inputSchema: {
       type: "object",
       properties: {
-        workfile_path: { type: "string", description: "Absolute path to the workfile directory containing extracted/ subdirectory" },
-        form_id: { type: "string", description: "Optional target form ID for catalog-aware mapping" },
-        max_attempts: { type: "number", description: "Max AI mapping attempts before accepting best result (default 3, max 5)" },
-        groq_model: { type: "string", description: "Groq model (default: gemma2-9b-it)" },
-        verify_readback: { type: "boolean", description: "Whether to simulate readback verification (default: true)" },
+        workfile_path: {
+          type: "string",
+          description:
+            "Absolute path to the workfile directory containing extracted/ subdirectory",
+        },
+        form_id: {
+          type: "string",
+          description: "Optional target form ID for catalog-aware mapping",
+        },
+        max_attempts: {
+          type: "number",
+          description:
+            "Max AI mapping attempts before accepting best result (default 3, max 5)",
+        },
+        groq_model: {
+          type: "string",
+          description: "Groq model (default: gemma2-9b-it)",
+        },
+        verify_readback: {
+          type: "boolean",
+          description:
+            "Whether to simulate readback verification (default: true)",
+        },
       },
       required: ["workfile_path"],
     },
@@ -1756,22 +2272,29 @@ interface RiskAnnotations {
 
 type HermesTool = Tool & { risk: RiskMetadata; annotations: RiskAnnotations };
 
-const POLICY_FIELD_SCHEMAS: Record<string, { type: string; description: string }> = {
+const POLICY_FIELD_SCHEMAS: Record<
+  string,
+  { type: string; description: string }
+> = {
   confirm: {
     type: "boolean",
-    description: "Required for mutating tools. Must be true to proceed; calls without it fail closed with no state change.",
+    description:
+      "Required for mutating tools. Must be true to proceed; calls without it fail closed with no state change.",
   },
   approval: {
     type: "object",
-    description: "Explicit approval provenance (e.g. {approved_by, reason, policy}). Required for dangerous/global actions and non-Hermes project control.",
+    description:
+      "Explicit approval provenance (e.g. {approved_by, reason, policy}). Required for dangerous/global actions and non-Hermes project control.",
   },
   validation_id: {
     type: "string",
-    description: "Validation correlation ID. Required for Hermes-scoped redeploy/restart.",
+    description:
+      "Validation correlation ID. Required for Hermes-scoped redeploy/restart.",
   },
   validation_evidence: {
     type: "object",
-    description: "Current source validation evidence {commit, build_passed:true} matching the deployed commit. Required for Hermes-scoped redeploy/restart.",
+    description:
+      "Current source validation evidence {commit, build_passed:true} matching the deployed commit. Required for Hermes-scoped redeploy/restart.",
   },
 };
 
@@ -1784,12 +2307,18 @@ function policyFieldsFor(name: string): string[] {
 
 function decorateTool(tool: Tool): HermesTool {
   const meta: RiskMetadata = RISK_METADATA[tool.name] ?? {
-    level: "read-only", mutating: false, confirmation_required: false,
-    approval_required: false, scope: "read", summary: "",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "",
   };
 
   const inputSchema = JSON.parse(JSON.stringify(tool.inputSchema)) as {
-    type: string; properties?: Record<string, unknown>; required?: string[];
+    type: string;
+    properties?: Record<string, unknown>;
+    required?: string[];
   };
   if (meta.mutating) {
     inputSchema.properties = inputSchema.properties ?? {};
@@ -1823,7 +2352,8 @@ const publicTools: HermesTool[] = tools.map(decorateTool);
 
 async function handleResearch(args: { query: string }) {
   const result = await perplexityResearch(args.query);
-  const content = result.choices?.[0]?.message?.content ?? JSON.stringify(result);
+  const content =
+    result.choices?.[0]?.message?.content ?? JSON.stringify(result);
   return { content: [{ type: "text", text: content }] };
 }
 
@@ -1836,7 +2366,9 @@ async function handleVpsMetrics(args: { days?: number }) {
   const days = args.days ?? 1;
   const to = new Date().toISOString();
   const from = new Date(Date.now() - days * 86400000).toISOString();
-  const m = await hostingerGet(`/api/vps/v1/virtual-machines/${VPS_ID}/metrics?date_from=${from}&date_to=${to}`);
+  const m = await hostingerGet(
+    `/api/vps/v1/virtual-machines/${VPS_ID}/metrics?date_from=${from}&date_to=${to}`,
+  );
   return { content: [{ type: "text", text: JSON.stringify(m, null, 2) }] };
 }
 
@@ -1846,43 +2378,127 @@ async function handleVpsProjects() {
 }
 
 async function handleVpsProjectLogs(args: { project: string }) {
-  const l = await hostingerGet(`/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/logs`);
+  const l = await hostingerGet(
+    `/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/logs`,
+  );
   return { content: [{ type: "text", text: JSON.stringify(l, null, 2) }] };
 }
 
 async function handleVpsRestartProject(args: { project: string }) {
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/restart`);
-  return { content: [{ type: "text", text: `Project "${args.project}" restart initiated.\n${JSON.stringify(r, null, 2)}` }] };
+  const r = await hostingerPost(
+    `/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/restart`,
+  );
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Project "${args.project}" restart initiated.\n${JSON.stringify(
+          r,
+          null,
+          2,
+        )}`,
+      },
+    ],
+  };
 }
 
 async function handleVpsStopProject(args: { project: string }) {
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/stop`);
-  return { content: [{ type: "text", text: `Project "${args.project}" stopped.\n${JSON.stringify(r, null, 2)}` }] };
+  const r = await hostingerPost(
+    `/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/stop`,
+  );
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Project "${args.project}" stopped.\n${JSON.stringify(
+          r,
+          null,
+          2,
+        )}`,
+      },
+    ],
+  };
 }
 
 async function handleVpsStartProject(args: { project: string }) {
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/start`);
-  return { content: [{ type: "text", text: `Project "${args.project}" started.\n${JSON.stringify(r, null, 2)}` }] };
+  const r = await hostingerPost(
+    `/api/vps/v1/virtual-machines/${VPS_ID}/docker/${args.project}/start`,
+  );
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Project "${args.project}" started.\n${JSON.stringify(
+          r,
+          null,
+          2,
+        )}`,
+      },
+    ],
+  };
 }
 
-async function handleVpsDeploy(args: { name: string; compose_content: string; environment?: string }) {
-  const body: Record<string, unknown> = { project_name: args.name, content: args.compose_content };
+async function handleVpsDeploy(args: {
+  name: string;
+  compose_content: string;
+  environment?: string;
+}) {
+  const body: Record<string, unknown> = {
+    project_name: args.name,
+    content: args.compose_content,
+  };
   if (args.environment) body.environment = args.environment;
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/docker`, body);
-  return { content: [{ type: "text", text: `Project "${args.name}" deploying.\n${JSON.stringify(r, null, 2)}` }] };
+  const r = await hostingerPost(
+    `/api/vps/v1/virtual-machines/${VPS_ID}/docker`,
+    body,
+  );
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Project "${args.name}" deploying.\n${JSON.stringify(
+          r,
+          null,
+          2,
+        )}`,
+      },
+    ],
+  };
 }
 
 async function handleVpsSnapshot() {
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/snapshot`);
-  return { content: [{ type: "text", text: `Snapshot initiated.\n${JSON.stringify(r, null, 2)}` }] };
+  const r = await hostingerPost(
+    `/api/vps/v1/virtual-machines/${VPS_ID}/snapshot`,
+  );
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Snapshot initiated.\n${JSON.stringify(r, null, 2)}`,
+      },
+    ],
+  };
 }
 
 async function handleVpsRestart() {
-  const r = await hostingerPost(`/api/vps/v1/virtual-machines/${VPS_ID}/restart`);
-  return { content: [{ type: "text", text: `VPS restart initiated.\n${JSON.stringify(r, null, 2)}` }] };
+  const r = await hostingerPost(
+    `/api/vps/v1/virtual-machines/${VPS_ID}/restart`,
+  );
+  return {
+    content: [
+      {
+        type: "text",
+        text: `VPS restart initiated.\n${JSON.stringify(r, null, 2)}`,
+      },
+    ],
+  };
 }
 
-async function handleMemoryStore(args: { category: string; content: string; metadata?: Record<string, unknown> }) {
+async function handleMemoryStore(args: {
+  category: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}) {
   const metadata = parseMetadata(args.metadata);
   const stored = storeTypedMemoryRecord({
     category: args.category,
@@ -1893,30 +2509,51 @@ async function handleMemoryStore(args: { category: string; content: string; meta
       source: asOptionalString(metadata.source) ?? "memory_store",
       correlationId: asOptionalString(metadata.correlation_id) ?? undefined,
       runId: asOptionalString(metadata.run_id),
-      taskId: asOptionalString(metadata.task_id) ?? asOptionalString(metadata.local_task_id),
+      taskId:
+        asOptionalString(metadata.task_id) ??
+        asOptionalString(metadata.local_task_id),
       timestamp: asOptionalString(metadata.timestamp) ?? undefined,
       confidence: metadata.confidence,
     },
   });
-  return { content: [{ type: "text", text: `Memory stored [${stored.id}] in "${stored.category}"` }] };
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Memory stored [${stored.id}] in "${stored.category}"`,
+      },
+    ],
+  };
 }
 
-async function handleMemoryRecall(args: { category?: string; query?: string; limit?: number }) {
+async function handleMemoryRecall(args: {
+  category?: string;
+  query?: string;
+  limit?: number;
+}) {
   const limit = args.limit ?? 20;
   let stmt: ReturnType<typeof db.prepare>;
   let params: unknown[] = [];
 
   if (args.category && args.query) {
-    stmt = db.prepare("SELECT * FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?");
+    stmt = db.prepare(
+      "SELECT * FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?",
+    );
     params = [args.category, `%${args.query}%`, limit];
   } else if (args.category) {
-    stmt = db.prepare("SELECT * FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?");
+    stmt = db.prepare(
+      "SELECT * FROM memories WHERE category = ? ORDER BY created_at DESC LIMIT ?",
+    );
     params = [args.category, limit];
   } else if (args.query) {
-    stmt = db.prepare("SELECT * FROM memories WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?");
+    stmt = db.prepare(
+      "SELECT * FROM memories WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?",
+    );
     params = [`%${args.query}%`, limit];
   } else {
-    stmt = db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?");
+    stmt = db.prepare(
+      "SELECT * FROM memories ORDER BY created_at DESC LIMIT ?",
+    );
     params = [limit];
   }
   const rows: unknown[] = [];
@@ -1930,7 +2567,9 @@ async function handleMemoryRecall(args: { category?: string; query?: string; lim
       metadata: parseMetadata(record.metadata),
     };
   });
-  return { content: [{ type: "text", text: JSON.stringify(normalizedRows, null, 2) }] };
+  return {
+    content: [{ type: "text", text: JSON.stringify(normalizedRows, null, 2) }],
+  };
 }
 
 async function handlePlan(args: { goal: string; context?: string }) {
@@ -1942,13 +2581,15 @@ ${args.context ? `Context: ${args.context}` : ""}
 Format: numbered phases with name, acceptance criteria, deliverables, risks, and effort estimate.`;
 
   const result = await perplexityResearch(query);
-  const planText = result.choices?.[0]?.message?.content ?? "Plan generation failed";
+  const planText =
+    result.choices?.[0]?.message?.content ?? "Plan generation failed";
 
   // Extract structured evidence for policy gating and audit
   const citationUrls = extractCitationUrls(planText);
   const extractedConfidence = extractConfidenceScore(planText);
   const confidenceScore = extractedConfidence ?? 0.5; // default medium confidence
-  const confidenceLabel = confidenceScore >= 0.8 ? "high" : confidenceScore >= 0.5 ? "medium" : "low";
+  const confidenceLabel =
+    confidenceScore >= 0.8 ? "high" : confidenceScore >= 0.5 ? "medium" : "low";
 
   const planRecord = redactSecrets(`## Plan: ${args.goal}\n\n${planText}`);
   const stored = storeTypedMemoryRecord({
@@ -1968,7 +2609,11 @@ Format: numbered phases with name, acceptance criteria, deliverables, risks, and
     },
   });
 
-  return { content: [{ type: "text", text: `${planRecord}\n\n---\nStored [${stored.id}]` }] };
+  return {
+    content: [
+      { type: "text", text: `${planRecord}\n\n---\nStored [${stored.id}]` },
+    ],
+  };
 }
 
 function tryParseJson(text: string): unknown {
@@ -1985,37 +2630,62 @@ function validationEvidenceEntries(value: unknown): unknown[] {
   return [];
 }
 
-async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) {
+async function handleBusinessManagementCycle(
+  args: BusinessManagementCycleArgs,
+) {
   const objective = redactSecrets((args.objective ?? "").trim());
   if (!objective) {
-    return { content: [{ type: "text", text: "Error: objective is required" }], isError: true };
+    return {
+      content: [{ type: "text", text: "Error: objective is required" }],
+      isError: true,
+    };
   }
 
   const correlationId = normalizeCorrelationId(args.correlation_id);
   const observedAt = nowIso();
   const simulateFailuresRaw = asRecord(args.simulate_failures);
-  const simulateFailures = Object.keys(simulateFailuresRaw).length > 0
-    ? (simulateFailuresRaw as SimulateFailuresConfig)
-    : undefined;
-  fleetLifecycleState.pendingApprovals = asNonNegativeInt(args.pending_approvals, 0);
-  fleetLifecycleState.blockedCapabilities = asStringArray(args.blocked_capabilities);
+  const simulateFailures =
+    Object.keys(simulateFailuresRaw).length > 0
+      ? (simulateFailuresRaw as SimulateFailuresConfig)
+      : undefined;
+  fleetLifecycleState.pendingApprovals = asNonNegativeInt(
+    args.pending_approvals,
+    0,
+  );
+  fleetLifecycleState.blockedCapabilities = asStringArray(
+    args.blocked_capabilities,
+  );
 
   // Drain retry queues from prior cycles before starting new work.
   drainRetryQueues();
 
   await ensureFleetStartupLifecycle();
   if (!FLEET_CONTROL_PLANE.isConfigured()) {
-    const message = "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
+    const message =
+      "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
     queueFleetRetry("cycle_preflight", correlationId, null, message);
     return {
-      content: [{ type: "text", text: JSON.stringify({
-        status: "degraded",
-        correlation_id: correlationId,
-        reason: message,
-        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
-          .filter((retry) => retry.correlation_id === correlationId),
-      }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "degraded",
+              correlation_id: correlationId,
+              reason: message,
+              pending_retries: fleetLifecycleState.pendingRetries.filter(
+                (retry) => retry.correlation_id === correlationId,
+              ),
+              pending_knowledge_retries:
+                fleetLifecycleState.pendingKnowledgeRetries.filter(
+                  (retry) => retry.correlation_id === correlationId,
+                ),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
       isError: true,
     };
   }
@@ -2025,14 +2695,27 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   } catch (error) {
     queueFleetRetry("register_agent", correlationId, null, error);
     return {
-      content: [{ type: "text", text: JSON.stringify({
-        status: "degraded",
-        correlation_id: correlationId,
-        reason: "Failed to register Hermes with fleet.",
-        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
-          .filter((retry) => retry.correlation_id === correlationId),
-      }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "degraded",
+              correlation_id: correlationId,
+              reason: "Failed to register Hermes with fleet.",
+              pending_retries: fleetLifecycleState.pendingRetries.filter(
+                (retry) => retry.correlation_id === correlationId,
+              ),
+              pending_knowledge_retries:
+                fleetLifecycleState.pendingKnowledgeRetries.filter(
+                  (retry) => retry.correlation_id === correlationId,
+                ),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
       isError: true,
     };
   }
@@ -2068,25 +2751,52 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   } catch (error) {
     queueFleetRetry("record_run_start", correlationId, null, error);
     return {
-      content: [{ type: "text", text: JSON.stringify({
-        status: "degraded",
-        correlation_id: correlationId,
-        reason: "Failed to start fleet run.",
-        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
-          .filter((retry) => retry.correlation_id === correlationId),
-      }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "degraded",
+              correlation_id: correlationId,
+              reason: "Failed to start fleet run.",
+              pending_retries: fleetLifecycleState.pendingRetries.filter(
+                (retry) => retry.correlation_id === correlationId,
+              ),
+              pending_knowledge_retries:
+                fleetLifecycleState.pendingKnowledgeRetries.filter(
+                  (retry) => retry.correlation_id === correlationId,
+                ),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
       isError: true,
     };
   }
 
-  const consumeIntentsLimit = Math.max(1, asNonNegativeInt(args.consume_intents_limit, 10));
+  const consumeIntentsLimit = Math.max(
+    1,
+    asNonNegativeInt(args.consume_intents_limit, 10),
+  );
   try {
-    if (shouldSimulateOperationFailure(simulateFailures, "consume_open_intents", "inbound_intents")) {
+    if (
+      shouldSimulateOperationFailure(
+        simulateFailures,
+        "consume_open_intents",
+        "inbound_intents",
+      )
+    ) {
       throw new Error("Simulated intent-consume failure");
     }
-    const consumed = await FLEET_CONTROL_PLANE.consumeOpenIntents(FLEET_AGENT_NAME, consumeIntentsLimit);
-    consumedInboundIntents.push(...asArray(consumed).map((intent) => asRecord(intent)));
+    const consumed = await FLEET_CONTROL_PLANE.consumeOpenIntents(
+      FLEET_AGENT_NAME,
+      consumeIntentsLimit,
+    );
+    consumedInboundIntents.push(
+      ...asArray(consumed).map((intent) => asRecord(intent)),
+    );
   } catch (error) {
     cycleErrors.push("consume_open_intents failed");
     queueFleetRetry("consume_open_intents", correlationId, runId, error);
@@ -2095,15 +2805,23 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   const coordinationIntentRequests = asArray(args.coordination_intents);
   for (let index = 0; index < coordinationIntentRequests.length; index += 1) {
     const intentReq = asRecord(coordinationIntentRequests[index]);
-    const targetAgent = typeof intentReq.target_agent === "string" ? intentReq.target_agent.trim() : "";
-    const kind = typeof intentReq.kind === "string" ? intentReq.kind.trim() : "";
+    const targetAgent =
+      typeof intentReq.target_agent === "string"
+        ? intentReq.target_agent.trim()
+        : "";
+    const kind =
+      typeof intentReq.kind === "string" ? intentReq.kind.trim() : "";
     if (!targetAgent || !kind) {
-      cycleErrors.push(`coordination_intents[${index}] missing target_agent or kind`);
+      cycleErrors.push(
+        `coordination_intents[${index}] missing target_agent or kind`,
+      );
       continue;
     }
-    const sourceAgent = typeof intentReq.source_agent === "string" && intentReq.source_agent.trim().length > 0
-      ? intentReq.source_agent.trim()
-      : FLEET_AGENT_NAME;
+    const sourceAgent =
+      typeof intentReq.source_agent === "string" &&
+      intentReq.source_agent.trim().length > 0
+        ? intentReq.source_agent.trim()
+        : FLEET_AGENT_NAME;
     const payload = redactMetadata({
       ...asRecord(intentReq.payload),
       correlation_id: correlationId,
@@ -2112,15 +2830,23 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       requested_at: observedAt,
     }) as Record<string, unknown>;
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "signal_intent", "coordination_intents")) {
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "signal_intent",
+          "coordination_intents",
+        )
+      ) {
         throw new Error("Simulated signal_intent failure");
       }
-      const result = asRecord(await FLEET_CONTROL_PLANE.signalIntent({
-        target_agent: targetAgent,
-        kind,
-        payload,
-        source_agent: sourceAgent,
-      }));
+      const result = asRecord(
+        await FLEET_CONTROL_PLANE.signalIntent({
+          target_agent: targetAgent,
+          kind,
+          payload,
+          source_agent: sourceAgent,
+        }),
+      );
       signaledIntents.push({
         intent_id: result.intent_id ?? null,
         target_agent: targetAgent,
@@ -2128,7 +2854,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
         source_agent: sourceAgent,
       });
     } catch (error) {
-      cycleErrors.push(`signal_intent failed for coordination_intents[${index}]`);
+      cycleErrors.push(
+        `signal_intent failed for coordination_intents[${index}]`,
+      );
       queueFleetRetry("signal_intent", correlationId, runId, error);
     }
   }
@@ -2149,28 +2877,41 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       queued_at: observedAt,
       created_by: FLEET_AGENT_NAME,
     }) as Record<string, unknown>;
-    const source = typeof taskReq.source === "string" && taskReq.source.trim().length > 0
-      ? taskReq.source.trim()
-      : FLEET_AGENT_NAME;
-    const description = typeof taskReq.description === "string" && taskReq.description.trim().length > 0
-      ? taskReq.description
-      : `Local/browser task for ${objective} [${correlationId}]`;
-    const dedupKey = typeof taskReq.dedup_key === "string" && taskReq.dedup_key.trim().length > 0
-      ? taskReq.dedup_key
-      : `${correlationId}:local:${index}:${kind}`;
+    const source =
+      typeof taskReq.source === "string" && taskReq.source.trim().length > 0
+        ? taskReq.source.trim()
+        : FLEET_AGENT_NAME;
+    const description =
+      typeof taskReq.description === "string" &&
+      taskReq.description.trim().length > 0
+        ? taskReq.description
+        : `Local/browser task for ${objective} [${correlationId}]`;
+    const dedupKey =
+      typeof taskReq.dedup_key === "string" &&
+      taskReq.dedup_key.trim().length > 0
+        ? taskReq.dedup_key
+        : `${correlationId}:local:${index}:${kind}`;
     const ttlSeconds = Math.max(60, asNonNegativeInt(taskReq.ttl_seconds, 600));
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "local_tasks")) {
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "queue_local_task",
+          "local_tasks",
+        )
+      ) {
         throw new Error("Simulated queue_local_task failure");
       }
-      const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
-        kind,
-        payload,
-        description,
-        source,
-        dedup_key: dedupKey,
-        ttl_seconds: ttlSeconds,
-      }));
+      const queued = asRecord(
+        await FLEET_CONTROL_PLANE.queueLocalTask({
+          kind,
+          payload,
+          description,
+          source,
+          dedup_key: dedupKey,
+          ttl_seconds: ttlSeconds,
+        }),
+      );
       queuedLocalTasks.push({
         task_id: queued.task_id ?? queued.id ?? queued.local_task_id ?? null,
         kind,
@@ -2186,33 +2927,49 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
   const capabilityRequests = asArray(args.capability_requests);
   for (let index = 0; index < capabilityRequests.length; index += 1) {
     const req = asRecord(capabilityRequests[index]);
-    const capability = typeof req.capability === "string" ? req.capability.trim() : "";
-    const justificationRaw = typeof req.justification === "string" ? req.justification.trim() : "";
+    const capability =
+      typeof req.capability === "string" ? req.capability.trim() : "";
+    const justificationRaw =
+      typeof req.justification === "string" ? req.justification.trim() : "";
     if (!capability || !justificationRaw) {
-      cycleErrors.push(`capability_requests[${index}] missing capability or justification`);
+      cycleErrors.push(
+        `capability_requests[${index}] missing capability or justification`,
+      );
       continue;
     }
-    const requestedBy = typeof req.requested_by === "string" && req.requested_by.trim().length > 0
-      ? req.requested_by.trim()
-      : FLEET_AGENT_NAME;
-    const justification = redactSecrets(justificationRaw.includes(correlationId)
-      ? justificationRaw
-      : `[${correlationId}] ${justificationRaw}`);
+    const requestedBy =
+      typeof req.requested_by === "string" && req.requested_by.trim().length > 0
+        ? req.requested_by.trim()
+        : FLEET_AGENT_NAME;
+    const justification = redactSecrets(
+      justificationRaw.includes(correlationId)
+        ? justificationRaw
+        : `[${correlationId}] ${justificationRaw}`,
+    );
     const repo = typeof req.repo === "string" ? req.repo : undefined;
-    const moveId = typeof req.move_id === "number" && Number.isFinite(req.move_id)
-      ? Math.trunc(req.move_id)
-      : undefined;
+    const moveId =
+      typeof req.move_id === "number" && Number.isFinite(req.move_id)
+        ? Math.trunc(req.move_id)
+        : undefined;
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "request_capability", "capability_requests")) {
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "request_capability",
+          "capability_requests",
+        )
+      ) {
         throw new Error("Simulated request_capability failure");
       }
-      const result = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
-        capability,
-        justification,
-        requested_by: requestedBy,
-        repo,
-        move_id: moveId,
-      }));
+      const result = asRecord(
+        await FLEET_CONTROL_PLANE.requestCapability({
+          capability,
+          justification,
+          requested_by: requestedBy,
+          repo,
+          move_id: moveId,
+        }),
+      );
       filedCapabilityRequests.push({
         capability,
         request_id: result.id ?? result.request_id ?? null,
@@ -2220,7 +2977,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
         requested_by: requestedBy,
       });
     } catch (error) {
-      cycleErrors.push(`request_capability failed for capability_requests[${index}]`);
+      cycleErrors.push(
+        `request_capability failed for capability_requests[${index}]`,
+      );
       queueFleetRetry("request_capability", correlationId, runId, error);
     }
   }
@@ -2238,7 +2997,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     }
   }
   const capabilityGaps = asArray(args.capability_gaps);
-  const validationEvidence = validationEvidenceEntries(args.validation_evidence);
+  const validationEvidence = validationEvidenceEntries(
+    args.validation_evidence,
+  );
   const normalizedLearnings = normalizeLearningEntries(
     asArray(args.learnings),
     correlationId,
@@ -2248,7 +3009,13 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
 
   if (asBool(args.ingest_completed_local_tasks, true)) {
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "list_local_tasks", "local_task_outcomes")) {
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "list_local_tasks",
+          "local_task_outcomes",
+        )
+      ) {
         throw new Error("Simulated local task outcome ingestion failure");
       }
       const outcomes = await ingestCompletedLocalTasks({
@@ -2261,7 +3028,12 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       ingestedLocalTaskOutcomes.push(...outcomes);
     } catch (error) {
       cycleErrors.push("ingest_completed_local_tasks failed");
-      queueFleetRetry("ingest_completed_local_tasks", correlationId, runId, error);
+      queueFleetRetry(
+        "ingest_completed_local_tasks",
+        correlationId,
+        runId,
+        error,
+      );
     }
   }
 
@@ -2275,7 +3047,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
         material: learning.material,
       },
       trace: {
-        source: asOptionalString(learning.metadata.source) ?? "business_management_cycle_learning",
+        source:
+          asOptionalString(learning.metadata.source) ??
+          "business_management_cycle_learning",
         correlationId,
         runId,
         timestamp: observedAt,
@@ -2290,7 +3064,12 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     });
     if (!(learning.repeated || learning.material)) continue;
     try {
-      const bridge = bridgeLearningToMottoSkills(learning, correlationId, runId, learningMemory.id);
+      const bridge = bridgeLearningToMottoSkills(
+        learning,
+        correlationId,
+        runId,
+        learningMemory.id,
+      );
       const bridgeMemory = storeTypedMemoryRecord({
         category: learning.category,
         content: `Bridged learning to ${bridge.store_type} (${bridge.record_id})`,
@@ -2313,7 +3092,9 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       });
       mottoSkillsBridges.push({ ...bridge, memory_id: bridgeMemory.id });
     } catch (error) {
-      cycleErrors.push(`motto_skills_bridge failed for learning[${learning.index}]`);
+      cycleErrors.push(
+        `motto_skills_bridge failed for learning[${learning.index}]`,
+      );
       queueKnowledgeRetry("motto_skills_bridge", correlationId, runId, error);
     }
   }
@@ -2336,7 +3117,13 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     metadata: learning.metadata,
   }));
 
-  const sectionPayloads: Array<{ section: string; event_kind: string; artifact_kind: string; data: unknown; level?: string }> = [
+  const sectionPayloads: Array<{
+    section: string;
+    event_kind: string;
+    artifact_kind: string;
+    data: unknown;
+    level?: string;
+  }> = [
     {
       section: "inbound_intents",
       event_kind: "cycle.inbound_intents",
@@ -2371,15 +3158,61 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       data: filedCapabilityRequests,
       level: "warn",
     },
-    { section: "observations", event_kind: "cycle.observations", artifact_kind: "business_observations", data: observations },
-    { section: "plan", event_kind: "cycle.plan", artifact_kind: "business_plan", data: plan },
-    { section: "proposed_actions", event_kind: "cycle.proposed_actions", artifact_kind: "business_proposed_actions", data: proposedActions },
-    { section: "capability_gaps", event_kind: "cycle.capability_gaps", artifact_kind: "business_capability_gaps", data: capabilityGaps, level: "warn" },
-    { section: "validation_evidence", event_kind: "cycle.validation_evidence", artifact_kind: "business_validation_evidence", data: validationEvidence },
-    { section: "learning_memory_records", event_kind: "cycle.learning_memory_records", artifact_kind: "business_learning_memory_records", data: learningMemoryRecords },
-    { section: "learnings", event_kind: "cycle.learnings", artifact_kind: "business_learnings", data: learnings },
-    { section: "motto_skills_bridge", event_kind: "cycle.motto_skills_bridge", artifact_kind: "business_motto_skills_bridge", data: mottoSkillsBridges },
-    { section: "recalled_bridges", event_kind: "cycle.recalled_bridges", artifact_kind: "business_recalled_bridges", data: recalledBridgeReferences },
+    {
+      section: "observations",
+      event_kind: "cycle.observations",
+      artifact_kind: "business_observations",
+      data: observations,
+    },
+    {
+      section: "plan",
+      event_kind: "cycle.plan",
+      artifact_kind: "business_plan",
+      data: plan,
+    },
+    {
+      section: "proposed_actions",
+      event_kind: "cycle.proposed_actions",
+      artifact_kind: "business_proposed_actions",
+      data: proposedActions,
+    },
+    {
+      section: "capability_gaps",
+      event_kind: "cycle.capability_gaps",
+      artifact_kind: "business_capability_gaps",
+      data: capabilityGaps,
+      level: "warn",
+    },
+    {
+      section: "validation_evidence",
+      event_kind: "cycle.validation_evidence",
+      artifact_kind: "business_validation_evidence",
+      data: validationEvidence,
+    },
+    {
+      section: "learning_memory_records",
+      event_kind: "cycle.learning_memory_records",
+      artifact_kind: "business_learning_memory_records",
+      data: learningMemoryRecords,
+    },
+    {
+      section: "learnings",
+      event_kind: "cycle.learnings",
+      artifact_kind: "business_learnings",
+      data: learnings,
+    },
+    {
+      section: "motto_skills_bridge",
+      event_kind: "cycle.motto_skills_bridge",
+      artifact_kind: "business_motto_skills_bridge",
+      data: mottoSkillsBridges,
+    },
+    {
+      section: "recalled_bridges",
+      event_kind: "cycle.recalled_bridges",
+      artifact_kind: "business_recalled_bridges",
+      data: recalledBridgeReferences,
+    },
   ];
 
   const emittedSections: Array<Record<string, unknown>> = [];
@@ -2397,8 +3230,16 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
 
     let eventId: number | null = null;
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "record_event", section.section)) {
-        throw new Error(`Simulated record_event failure for ${section.section}`);
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "record_event",
+          section.section,
+        )
+      ) {
+        throw new Error(
+          `Simulated record_event failure for ${section.section}`,
+        );
       }
       const eventRes = await FLEET_CONTROL_PLANE.recordEvent({
         agent_name: FLEET_AGENT_NAME,
@@ -2418,8 +3259,16 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     let artifactId: number | null = null;
     const artifactBody = JSON.stringify(eventPayload, null, 2);
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "record_artifact_content", section.section)) {
-        throw new Error(`Simulated record_artifact_content failure for ${section.section}`);
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "record_artifact_content",
+          section.section,
+        )
+      ) {
+        throw new Error(
+          `Simulated record_artifact_content failure for ${section.section}`,
+        );
       }
       const artifactRes = await FLEET_CONTROL_PLANE.recordArtifactContent({
         agent_name: FLEET_AGENT_NAME,
@@ -2475,7 +3324,12 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     knowledgeRecordId = knowledgeWrite.memoryId;
   } else {
     cycleErrors.push("knowledge_store_write failed");
-    queueKnowledgeRetry("cycle_knowledge_write", correlationId, runId, knowledgeWrite.error ?? "unknown knowledge-store failure");
+    queueKnowledgeRetry(
+      "cycle_knowledge_write",
+      correlationId,
+      runId,
+      knowledgeWrite.error ?? "unknown knowledge-store failure",
+    );
   }
 
   const businessPmOutput = {
@@ -2493,14 +3347,26 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     motto_skills_bridges: mottoSkillsBridges,
     recalled_bridged_knowledge: recalledBridgeReferences,
     knowledge_record_id: knowledgeRecordId,
-    pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-    pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
-      .filter((retry) => retry.correlation_id === correlationId),
+    pending_retries: fleetLifecycleState.pendingRetries.filter(
+      (retry) => retry.correlation_id === correlationId,
+    ),
+    pending_knowledge_retries:
+      fleetLifecycleState.pendingKnowledgeRetries.filter(
+        (retry) => retry.correlation_id === correlationId,
+      ),
   };
 
   try {
-    if (shouldSimulateOperationFailure(simulateFailures, "record_artifact_content", "business_pm_output")) {
-      throw new Error("Simulated record_artifact_content failure for business_pm_output");
+    if (
+      shouldSimulateOperationFailure(
+        simulateFailures,
+        "record_artifact_content",
+        "business_pm_output",
+      )
+    ) {
+      throw new Error(
+        "Simulated record_artifact_content failure for business_pm_output",
+      );
     }
     const pmOutputRes = await FLEET_CONTROL_PLANE.recordArtifactContent({
       agent_name: FLEET_AGENT_NAME,
@@ -2510,7 +3376,12 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
       run_id: runId,
       intent: objective,
       repo: BUILD_INFO.repository,
-      meta: { correlation_id: correlationId, run_id: runId, section: "business_pm_output", structured: true },
+      meta: {
+        correlation_id: correlationId,
+        run_id: runId,
+        section: "business_pm_output",
+        structured: true,
+      },
     });
     emittedSections.push({
       section: "business_pm_output",
@@ -2524,7 +3395,8 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     queueFleetRetry(msg, correlationId, runId, error);
   }
 
-  const finalStatus: "success" | "error" = cycleErrors.length === 0 ? "success" : "error";
+  const finalStatus: "success" | "error" =
+    cycleErrors.length === 0 ? "success" : "error";
 
   try {
     await FLEET_CONTROL_PLANE.recordRunEnd({
@@ -2535,9 +3407,13 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
         objective,
         emitted_sections: emittedSections,
         errors: cycleErrors,
-        pending_retry_count: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId).length,
-        pending_knowledge_retry_count: fleetLifecycleState.pendingKnowledgeRetries
-          .filter((retry) => retry.correlation_id === correlationId).length,
+        pending_retry_count: fleetLifecycleState.pendingRetries.filter(
+          (retry) => retry.correlation_id === correlationId,
+        ).length,
+        pending_knowledge_retry_count:
+          fleetLifecycleState.pendingKnowledgeRetries.filter(
+            (retry) => retry.correlation_id === correlationId,
+          ).length,
         knowledge_record_id: knowledgeRecordId,
         local_task_outcome_count: ingestedLocalTaskOutcomes.length,
         learning_memory_count: learningMemoryRecords.length,
@@ -2550,7 +3426,10 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
 
   fleetLifecycleState.lastLearnCycle = observedAt;
   try {
-    await sendFleetHeartbeat(finalStatus === "success" ? "idle" : "degraded", objective);
+    await sendFleetHeartbeat(
+      finalStatus === "success" ? "idle" : "degraded",
+      objective,
+    );
   } catch (error) {
     queueFleetRetry("heartbeat_cycle_end", correlationId, runId, error);
   }
@@ -2570,13 +3449,26 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
     motto_skills_bridges: mottoSkillsBridges,
     recalled_bridged_knowledge: recalledBridgeReferences,
     knowledge_record_id: knowledgeRecordId,
-    pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-    pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries.filter((retry) => retry.correlation_id === correlationId),
-    heartbeat: buildHeartbeatStatus(finalStatus === "success" ? "idle" : "degraded", objective),
+    pending_retries: fleetLifecycleState.pendingRetries.filter(
+      (retry) => retry.correlation_id === correlationId,
+    ),
+    pending_knowledge_retries:
+      fleetLifecycleState.pendingKnowledgeRetries.filter(
+        (retry) => retry.correlation_id === correlationId,
+      ),
+    heartbeat: buildHeartbeatStatus(
+      finalStatus === "success" ? "idle" : "degraded",
+      objective,
+    ),
   };
 
   return {
-    content: [{ type: "text", text: JSON.stringify(redactMetadata(cycleResult), null, 2) }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(redactMetadata(cycleResult), null, 2),
+      },
+    ],
     isError: finalStatus !== "success",
   };
 }
@@ -2584,10 +3476,18 @@ async function handleBusinessManagementCycle(args: BusinessManagementCycleArgs) 
 async function handleFleetGetRunDetails(args: { run_id: string }) {
   const runId = (args.run_id ?? "").trim();
   if (!runId) {
-    return { content: [{ type: "text", text: "Error: run_id is required" }], isError: true };
+    return {
+      content: [{ type: "text", text: "Error: run_id is required" }],
+      isError: true,
+    };
   }
   if (!FLEET_CONTROL_PLANE.isConfigured()) {
-    return { content: [{ type: "text", text: "Error: fleet control plane is not configured" }], isError: true };
+    return {
+      content: [
+        { type: "text", text: "Error: fleet control plane is not configured" },
+      ],
+      isError: true,
+    };
   }
 
   try {
@@ -2600,7 +3500,10 @@ async function handleFleetGetRunDetails(args: { run_id: string }) {
         ...artifactRecord,
         content: {
           ...content,
-          parsed_body: typeof body === "string" && body.length > 0 ? tryParseJson(body) : null,
+          parsed_body:
+            typeof body === "string" && body.length > 0
+              ? tryParseJson(body)
+              : null,
         },
       };
     });
@@ -2609,16 +3512,32 @@ async function handleFleetGetRunDetails(args: { run_id: string }) {
       ...runBundle,
       artifacts,
     };
-    return { content: [{ type: "text", text: JSON.stringify(redactMetadata(response), null, 2) }] };
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(redactMetadata(response), null, 2),
+        },
+      ],
+    };
   } catch (error) {
-    const message = redactSecrets(error instanceof Error ? error.message : String(error));
-    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+    const message = redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    );
+    return {
+      content: [{ type: "text", text: `Error: ${message}` }],
+      isError: true,
+    };
   }
 }
 
 // ─── Risk classification for proposed actions ──────────────────────
 
-type ActionRiskLevel = "read-only" | "low-impact-write" | "hermes-scoped-mutation" | "dangerous-global-mutation";
+type ActionRiskLevel =
+  | "read-only"
+  | "low-impact-write"
+  | "hermes-scoped-mutation"
+  | "dangerous-global-mutation";
 
 function classifyActionRisk(
   action: Record<string, unknown>,
@@ -2630,7 +3549,8 @@ function classifyActionRisk(
   blocked_reason?: string;
 } {
   const toolName = asOptionalString(action.tool ?? action.tool_name);
-  const actionType = asOptionalString(action.type ?? action.action ?? action.kind) ?? "";
+  const actionType =
+    asOptionalString(action.type ?? action.action ?? action.kind) ?? "";
   const actionMaterial = [
     actionType,
     asOptionalString(action.description),
@@ -2646,7 +3566,9 @@ function classifyActionRisk(
   // If the action references a known tool, use the existing risk policy
   if (toolName && RISK_METADATA[toolName]) {
     const meta = RISK_METADATA[toolName];
-    const blocked = meta.level === "dangerous-global-mutation" || (meta.mutating && meta.level === "hermes-scoped-mutation");
+    const blocked =
+      meta.level === "dangerous-global-mutation" ||
+      (meta.mutating && meta.level === "hermes-scoped-mutation");
     return {
       risk_level: meta.level as ActionRiskLevel,
       approval_required: meta.approval_required || meta.mutating,
@@ -2659,55 +3581,149 @@ function classifyActionRisk(
 
   // Classify by action type keywords
   if (/restart\s+(full\s+)?vps|vps\s+restart/i.test(actionMaterial)) {
-    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "VPS restart is a dangerous/global action requiring explicit approval." };
+    return {
+      risk_level: "dangerous-global-mutation",
+      approval_required: true,
+      blocked: true,
+      blocked_reason:
+        "VPS restart is a dangerous/global action requiring explicit approval.",
+    };
   }
   if (/snapshot/i.test(actionMaterial)) {
-    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "VPS snapshot is a dangerous/global action requiring explicit approval." };
-  }
-  if (/stop\s+(project|service)/i.test(actionMaterial) && !/hermes/i.test(actionMaterial)) {
-    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Stopping a non-Hermes project is a dangerous/global action requiring explicit approval." };
-  }
-  if (/deploy|restart\s+project|start\s+project/i.test(actionMaterial) && !/hermes/i.test(actionMaterial)) {
-    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Non-Hermes project deployment/control is a dangerous/global action requiring explicit approval." };
-  }
-  if (/restart\s+hermes|redeploy\s+hermes|deploy\s+hermes|start\s+hermes/i.test(actionMaterial)) {
-    return { risk_level: "hermes-scoped-mutation", approval_required: true, blocked: true, blocked_reason: "Hermes-scoped mutation requires validation evidence and approval." };
+    return {
+      risk_level: "dangerous-global-mutation",
+      approval_required: true,
+      blocked: true,
+      blocked_reason:
+        "VPS snapshot is a dangerous/global action requiring explicit approval.",
+    };
   }
   if (
-    /submit|send[\s_-]email|purchase|order[\s_-]change|change[\s_-]order|credential[\s_-]change|portal[\s_-]mutation|data[\s_-]mutation|paid\s+(lookup|search|query)|download.*(official|legal|record)/i
-      .test(actionMaterial)
+    /stop\s+(project|service)/i.test(actionMaterial) &&
+    !/hermes/i.test(actionMaterial)
   ) {
-    return { risk_level: "dangerous-global-mutation", approval_required: true, blocked: true, blocked_reason: "Business-impacting online mutation requires explicit approval." };
+    return {
+      risk_level: "dangerous-global-mutation",
+      approval_required: true,
+      blocked: true,
+      blocked_reason:
+        "Stopping a non-Hermes project is a dangerous/global action requiring explicit approval.",
+    };
   }
-  if (/research|read|query|list|info|metrics|logs|recall|status|report/i.test(actionMaterial)) {
-    const result = { risk_level: "read-only" as ActionRiskLevel, approval_required: false, blocked: false };
+  if (
+    /deploy|restart\s+project|start\s+project/i.test(actionMaterial) &&
+    !/hermes/i.test(actionMaterial)
+  ) {
+    return {
+      risk_level: "dangerous-global-mutation",
+      approval_required: true,
+      blocked: true,
+      blocked_reason:
+        "Non-Hermes project deployment/control is a dangerous/global action requiring explicit approval.",
+    };
+  }
+  if (
+    /restart\s+hermes|redeploy\s+hermes|deploy\s+hermes|start\s+hermes/i.test(
+      actionMaterial,
+    )
+  ) {
+    return {
+      risk_level: "hermes-scoped-mutation",
+      approval_required: true,
+      blocked: true,
+      blocked_reason:
+        "Hermes-scoped mutation requires validation evidence and approval.",
+    };
+  }
+  if (
+    /submit|send[\s_-]email|purchase|order[\s_-]change|change[\s_-]order|credential[\s_-]change|portal[\s_-]mutation|data[\s_-]mutation|paid\s+(lookup|search|query)|download.*(official|legal|record)/i.test(
+      actionMaterial,
+    )
+  ) {
+    return {
+      risk_level: "dangerous-global-mutation",
+      approval_required: true,
+      blocked: true,
+      blocked_reason:
+        "Business-impacting online mutation requires explicit approval.",
+    };
+  }
+  if (
+    /research|read|query|list|info|metrics|logs|recall|status|report/i.test(
+      actionMaterial,
+    )
+  ) {
+    const result = {
+      risk_level: "read-only" as ActionRiskLevel,
+      approval_required: false,
+      blocked: false,
+    };
     return reclassifyPortalIfSignalsBlocked(action, result, blockedSignals);
   }
-  if (/store\s+memory|plan|write\s+memory|record|emit|log\s+decision/i.test(actionMaterial)) {
-    const result = { risk_level: "low-impact-write" as ActionRiskLevel, approval_required: false, blocked: false };
+  if (
+    /store\s+memory|plan|write\s+memory|record|emit|log\s+decision/i.test(
+      actionMaterial,
+    )
+  ) {
+    const result = {
+      risk_level: "low-impact-write" as ActionRiskLevel,
+      approval_required: false,
+      blocked: false,
+    };
     return reclassifyPortalIfSignalsBlocked(action, result, blockedSignals);
   }
 
   // Default: if the action mentions mutating keywords, classify as hermes-scoped
-  if (/restart|deploy|stop|start|create|delete|update|modify|change/i.test(actionMaterial)) {
-    return { risk_level: "hermes-scoped-mutation", approval_required: true, blocked: true, blocked_reason: "Potential mutating action requires approval before execution." };
+  if (
+    /restart|deploy|stop|start|create|delete|update|modify|change/i.test(
+      actionMaterial,
+    )
+  ) {
+    return {
+      risk_level: "hermes-scoped-mutation",
+      approval_required: true,
+      blocked: true,
+      blocked_reason:
+        "Potential mutating action requires approval before execution.",
+    };
   }
 
   // Default to low-impact-write for unspecified actions
-  const defaultResult = { risk_level: "low-impact-write" as ActionRiskLevel, approval_required: false, blocked: false };
-  return reclassifyPortalIfSignalsBlocked(action, defaultResult, blockedSignals);
+  const defaultResult = {
+    risk_level: "low-impact-write" as ActionRiskLevel,
+    approval_required: false,
+    blocked: false,
+  };
+  return reclassifyPortalIfSignalsBlocked(
+    action,
+    defaultResult,
+    blockedSignals,
+  );
 }
 
 function reclassifyPortalIfSignalsBlocked(
   action: Record<string, unknown>,
-  result: { risk_level: ActionRiskLevel; approval_required: boolean; blocked: boolean; blocked_reason?: string },
+  result: {
+    risk_level: ActionRiskLevel;
+    approval_required: boolean;
+    blocked: boolean;
+    blocked_reason?: string;
+  },
   blockedSignals?: string[],
-): { risk_level: ActionRiskLevel; approval_required: boolean; blocked: boolean; blocked_reason?: string } {
+): {
+  risk_level: ActionRiskLevel;
+  approval_required: boolean;
+  blocked: boolean;
+  blocked_reason?: string;
+} {
   if (!result.blocked && blockedSignals && blockedSignals.length > 0) {
     const actionPortal = detectPortalSurface(action);
     if (actionPortal) {
       const blockedPortals = extractBlockedPortalSignals(blockedSignals);
-      if (blockedPortals.has(actionPortal) || blockedPortals.has("portal_generic")) {
+      if (
+        blockedPortals.has(actionPortal) ||
+        blockedPortals.has("portal_generic")
+      ) {
         const signalList = blockedSignals.slice(0, 5).join(", ");
         return {
           ...result,
@@ -2720,10 +3736,19 @@ function reclassifyPortalIfSignalsBlocked(
   return result;
 }
 
-type OnlineExecutionClassification = "headless-safe" | "session-bound" | "blocked";
+type OnlineExecutionClassification =
+  | "headless-safe"
+  | "session-bound"
+  | "blocked";
 
 interface AuthSessionNeed {
-  type: "session" | "credential" | "mfa" | "browser_profile" | "tooling" | "capability";
+  type:
+    | "session"
+    | "credential"
+    | "mfa"
+    | "browser_profile"
+    | "tooling"
+    | "capability";
   handle: string;
   surface: string;
 }
@@ -2846,14 +3871,22 @@ function extractBlockedPortalSignals(blockedSignals: string[]): Set<string> {
     if (/\bcad\b/.test(lower)) portals.add("county_cad");
     if (/comet|browser/.test(lower)) portals.add("comet_browser");
     if (/sharepoint|onedrive/.test(lower)) portals.add("sharepoint_onedrive");
-    if (/portal|session|auth/.test(lower) && !/taxnet|gmail|mail|matrix|mls|cad|comet|browser|sharepoint|onedrive/.test(lower)) {
+    if (
+      /portal|session|auth/.test(lower) &&
+      !/taxnet|gmail|mail|matrix|mls|cad|comet|browser|sharepoint|onedrive/.test(
+        lower,
+      )
+    ) {
       portals.add("portal_generic");
     }
   }
   return portals;
 }
 
-function inferMissingPrerequisites(action: Record<string, unknown>, portalSurface: string | null): string[] {
+function inferMissingPrerequisites(
+  action: Record<string, unknown>,
+  portalSurface: string | null,
+): string[] {
   const explicit: string[] = [];
 
   explicit.push(...asStringArray(action.missing_prerequisites));
@@ -2888,16 +3921,28 @@ function inferMissingPrerequisites(action: Record<string, unknown>, portalSurfac
     .join(" ")
     .toLowerCase();
 
-  const indicatesMissing = /missing|unavailable|not\s+authenticated|no\s+session|login\s+required|mfa|captcha|blocked/.test(text);
-  const defaultCapability = portalSurface ? ONLINE_SURFACE_DEFAULT_CAPABILITY[portalSurface] : null;
+  const indicatesMissing =
+    /missing|unavailable|not\s+authenticated|no\s+session|login\s+required|mfa|captcha|blocked/.test(
+      text,
+    );
+  const defaultCapability = portalSurface
+    ? ONLINE_SURFACE_DEFAULT_CAPABILITY[portalSurface]
+    : null;
 
-  if (explicit.length === 0 && (inferredFlags || indicatesMissing) && defaultCapability) {
+  if (
+    explicit.length === 0 &&
+    (inferredFlags || indicatesMissing) &&
+    defaultCapability
+  ) {
     explicit.push(defaultCapability);
   }
   return uniqueStrings(explicit);
 }
 
-function classifyOnlineFailureType(action: Record<string, unknown>, profile: OnlineWorkflowProfile): OnlineFailureDetails | null {
+function classifyOnlineFailureType(
+  action: Record<string, unknown>,
+  profile: OnlineWorkflowProfile,
+): OnlineFailureDetails | null {
   if (!profile.is_online_workflow) return null;
 
   const status = (asOptionalString(action.status) ?? "").toLowerCase();
@@ -2914,12 +3959,19 @@ function classifyOnlineFailureType(action: Record<string, unknown>, profile: Onl
     .join(" ");
   const material = `${status} ${details}`.toLowerCase();
 
-  const explicitFailureType = (asOptionalString(action.failure_type) ?? asOptionalString(action.blocker_type) ?? "")
+  const explicitFailureType = (
+    asOptionalString(action.failure_type) ??
+    asOptionalString(action.blocker_type) ??
+    ""
+  )
     .trim()
     .toLowerCase();
-  const hasFailureSignal = asBool(action.failed ?? action.is_failed ?? action.error_present, false)
-    || /failed|error|blocked|denied|unauthor|forbidden|rate.?limit|quota|captcha|mfa|2fa|otp|timeout|network|unavailable|provider/i.test(material)
-    || ["failed", "error", "blocked", "denied"].includes(status);
+  const hasFailureSignal =
+    asBool(action.failed ?? action.is_failed ?? action.error_present, false) ||
+    /failed|error|blocked|denied|unauthor|forbidden|rate.?limit|quota|captcha|mfa|2fa|otp|timeout|network|unavailable|provider/i.test(
+      material,
+    ) ||
+    ["failed", "error", "blocked", "denied"].includes(status);
   if (!hasFailureSignal && explicitFailureType.length === 0) return null;
 
   let failureType: OnlineFailureType = "provider_error";
@@ -2927,36 +3979,57 @@ function classifyOnlineFailureType(action: Record<string, unknown>, profile: Onl
     failureType = "auth_failure";
   } else if (explicitFailureType.includes("rate")) {
     failureType = "rate_limit";
-  } else if (explicitFailureType.includes("mfa") || explicitFailureType.includes("captcha") || explicitFailureType.includes("otp")) {
+  } else if (
+    explicitFailureType.includes("mfa") ||
+    explicitFailureType.includes("captcha") ||
+    explicitFailureType.includes("otp")
+  ) {
     failureType = "mfa_captcha";
-  } else if (explicitFailureType.includes("network") || explicitFailureType.includes("timeout")) {
+  } else if (
+    explicitFailureType.includes("network") ||
+    explicitFailureType.includes("timeout")
+  ) {
     failureType = "network_failure";
-  } else if (/unauthor|forbidden|auth|token|credential|login|session|403|401/.test(material)) {
+  } else if (
+    /unauthor|forbidden|auth|token|credential|login|session|403|401/.test(
+      material,
+    )
+  ) {
     failureType = "auth_failure";
   } else if (/rate.?limit|quota|429|too many requests/.test(material)) {
     failureType = "rate_limit";
   } else if (/mfa|captcha|otp|2fa/.test(material)) {
     failureType = "mfa_captcha";
-  } else if (/timeout|network|dns|connection|503|502|gateway|service unavailable/.test(material)) {
+  } else if (
+    /timeout|network|dns|connection|503|502|gateway|service unavailable/.test(
+      material,
+    )
+  ) {
     failureType = "network_failure";
   }
 
   const portalSurface = profile.portal_surface ?? "portal_generic";
   const missing = inferMissingPrerequisites(action, portalSurface);
   if (failureType === "auth_failure" && missing.length === 0) {
-    missing.push(ONLINE_SURFACE_DEFAULT_CAPABILITY[portalSurface] ?? "portal_authenticated_session");
+    missing.push(
+      ONLINE_SURFACE_DEFAULT_CAPABILITY[portalSurface] ??
+        "portal_authenticated_session",
+    );
   }
   if (failureType === "mfa_captcha" && missing.length === 0) {
     missing.push(`${portalSurface}_mfa_access`);
   }
   const normalizedMissing = uniqueStrings(missing);
   const provider = detectOnlineProvider(action) ?? profile.portal_surface;
-  const authSessionNeeds = inferAuthSessionNeeds(portalSurface, normalizedMissing);
+  const authSessionNeeds = inferAuthSessionNeeds(
+    portalSurface,
+    normalizedMissing,
+  );
   const message = redactSecrets(
-    asOptionalString(action.error)
-    ?? asOptionalString(action.blocker)
-    ?? asOptionalString(action.failure_reason)
-    ?? `${failureType} detected for ${provider ?? portalSurface}`,
+    asOptionalString(action.error) ??
+      asOptionalString(action.blocker) ??
+      asOptionalString(action.failure_reason) ??
+      `${failureType} detected for ${provider ?? portalSurface}`,
   );
 
   return {
@@ -2966,12 +4039,20 @@ function classifyOnlineFailureType(action: Record<string, unknown>, profile: Onl
     message,
     missing_prerequisites: normalizedMissing,
     auth_session_needs: authSessionNeeds,
-    requires_capability_request: normalizedMissing.length > 0 || failureType === "auth_failure" || failureType === "mfa_captcha",
-    requires_local_task: profile.requires_local_task || failureType === "auth_failure" || failureType === "mfa_captcha",
+    requires_capability_request:
+      normalizedMissing.length > 0 ||
+      failureType === "auth_failure" ||
+      failureType === "mfa_captcha",
+    requires_local_task:
+      profile.requires_local_task ||
+      failureType === "auth_failure" ||
+      failureType === "mfa_captcha",
   };
 }
 
-function normalizeObservedFields(value: unknown): Record<string, unknown> | null {
+function normalizeObservedFields(
+  value: unknown,
+): Record<string, unknown> | null {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return redactMetadata(value) as Record<string, unknown>;
   }
@@ -2984,34 +4065,51 @@ function buildOnlineEvidenceRecord(
   observedAt: string,
 ): OnlineEvidenceRecord {
   const status = (asOptionalString(action.status) ?? "").toLowerCase();
-  const source = redactSecrets(
-    asOptionalString(action.evidence_source)
-    ?? asOptionalString(action.source)
-    ?? asOptionalString(action.provider)
-    ?? asOptionalString(action.surface)
-    ?? asOptionalString(action.portal)
-    ?? "",
-  ) || null;
-  const tool = asOptionalString(action.tool) ?? asOptionalString(action.tool_name);
-  const taskId = asOptionalString(action.task_id) ?? asOptionalString(action.local_task_id) ?? asOptionalString(action.task_reference);
-  const evidenceId = asOptionalString(action.evidence_id) ?? asOptionalString(action.source_record_id);
-  const resultExcerpt = redactSecrets(
-    asOptionalString(action.result_excerpt)
-    ?? asOptionalString(action.evidence_excerpt)
-    ?? asOptionalString(action.observed_summary)
-    ?? "",
-  ) || null;
-  const observedFields = normalizeObservedFields(action.observed_fields ?? action.observed_field_values ?? action.fields);
-  const successClaim = asBool(action.success, false)
-    || asBool(action.completed, false)
-    || ["success", "succeeded", "completed", "done", "ok"].includes(status);
-  const hasResultEvidence = Boolean(resultExcerpt || observedFields || evidenceId || asOptionalString(action.evidence_url));
+  const source =
+    redactSecrets(
+      asOptionalString(action.evidence_source) ??
+        asOptionalString(action.source) ??
+        asOptionalString(action.provider) ??
+        asOptionalString(action.surface) ??
+        asOptionalString(action.portal) ??
+        "",
+    ) || null;
+  const tool =
+    asOptionalString(action.tool) ?? asOptionalString(action.tool_name);
+  const taskId =
+    asOptionalString(action.task_id) ??
+    asOptionalString(action.local_task_id) ??
+    asOptionalString(action.task_reference);
+  const evidenceId =
+    asOptionalString(action.evidence_id) ??
+    asOptionalString(action.source_record_id);
+  const resultExcerpt =
+    redactSecrets(
+      asOptionalString(action.result_excerpt) ??
+        asOptionalString(action.evidence_excerpt) ??
+        asOptionalString(action.observed_summary) ??
+        "",
+    ) || null;
+  const observedFields = normalizeObservedFields(
+    action.observed_fields ?? action.observed_field_values ?? action.fields,
+  );
+  const successClaim =
+    asBool(action.success, false) ||
+    asBool(action.completed, false) ||
+    ["success", "succeeded", "completed", "done", "ok"].includes(status);
+  const hasResultEvidence = Boolean(
+    resultExcerpt ||
+      observedFields ||
+      evidenceId ||
+      asOptionalString(action.evidence_url),
+  );
 
   const missingFields: string[] = [];
   if (successClaim) {
     if (!source) missingFields.push("source");
     if (!tool && !taskId) missingFields.push("tool_or_task_id");
-    if (!hasResultEvidence) missingFields.push("result_excerpt_or_observed_fields_or_evidence_id");
+    if (!hasResultEvidence)
+      missingFields.push("result_excerpt_or_observed_fields_or_evidence_id");
   }
 
   return {
@@ -3020,7 +4118,11 @@ function buildOnlineEvidenceRecord(
     tool,
     task_id: taskId,
     evidence_id: evidenceId,
-    timestamp: asOptionalString(action.evidence_timestamp) ?? asOptionalString(action.timestamp) ?? asOptionalString(action.observed_at) ?? observedAt,
+    timestamp:
+      asOptionalString(action.evidence_timestamp) ??
+      asOptionalString(action.timestamp) ??
+      asOptionalString(action.observed_at) ??
+      observedAt,
     provider: detectOnlineProvider(action),
     portal_surface: profile.portal_surface,
     result_excerpt: resultExcerpt,
@@ -3030,16 +4132,21 @@ function buildOnlineEvidenceRecord(
   };
 }
 
-function inferAuthSessionNeeds(portalSurface: string, prerequisites: string[]): AuthSessionNeed[] {
+function inferAuthSessionNeeds(
+  portalSurface: string,
+  prerequisites: string[],
+): AuthSessionNeed[] {
   const needs: AuthSessionNeed[] = [];
   for (const prerequisite of prerequisites) {
     const normalized = normalizeHandle(prerequisite);
     if (!normalized) continue;
     let type: AuthSessionNeed["type"] = "capability";
     if (/session|cookie|auth/.test(normalized)) type = "session";
-    else if (/credential|password|oauth|token|login/.test(normalized)) type = "credential";
+    else if (/credential|password|oauth|token|login/.test(normalized))
+      type = "credential";
     else if (/mfa|captcha|otp|2fa/.test(normalized)) type = "mfa";
-    else if (/browser|profile|comet|neon/.test(normalized)) type = "browser_profile";
+    else if (/browser|profile|comet|neon/.test(normalized))
+      type = "browser_profile";
     else if (/tool|mcp/.test(normalized)) type = "tooling";
     needs.push({ type, handle: normalized, surface: portalSurface });
   }
@@ -3062,9 +4169,15 @@ function classifyOnlineWorkflowStep(
     .join(" ")
     .toLowerCase();
 
-  const readOnlyHint = /research|read|query|list|info|metrics|logs|recall/.test(material);
-  const sessionHint = /portal|browser|session|auth|login|gmail|matrix|mls|taxnet|cad|comet|sharepoint|onedrive/.test(material);
-  const isOnlineWorkflow = portalSurface !== null || readOnlyHint || sessionHint;
+  const readOnlyHint = /research|read|query|list|info|metrics|logs|recall/.test(
+    material,
+  );
+  const sessionHint =
+    /portal|browser|session|auth|login|gmail|matrix|mls|taxnet|cad|comet|sharepoint|onedrive/.test(
+      material,
+    );
+  const isOnlineWorkflow =
+    portalSurface !== null || readOnlyHint || sessionHint;
 
   if (!isOnlineWorkflow) {
     return {
@@ -3080,8 +4193,14 @@ function classifyOnlineWorkflowStep(
   }
 
   const normalizedSurface = portalSurface ?? "portal_generic";
-  const missingPrerequisites = inferMissingPrerequisites(action, normalizedSurface);
-  const authSessionNeeds = inferAuthSessionNeeds(normalizedSurface, missingPrerequisites);
+  const missingPrerequisites = inferMissingPrerequisites(
+    action,
+    normalizedSurface,
+  );
+  const authSessionNeeds = inferAuthSessionNeeds(
+    normalizedSurface,
+    missingPrerequisites,
+  );
   const blockedMissingCapability = missingPrerequisites.length > 0;
 
   if (blockedMissingCapability || (risk.blocked && sessionHint)) {
@@ -3091,7 +4210,7 @@ function classifyOnlineWorkflowStep(
       execution_classification: "blocked",
       classification_reason: blockedMissingCapability
         ? "missing credential/session/tool prerequisite"
-        : (risk.blocked_reason ?? "policy blocked"),
+        : risk.blocked_reason ?? "policy blocked",
       missing_prerequisites: missingPrerequisites,
       auth_session_needs: authSessionNeeds,
       blocked_missing_capability: blockedMissingCapability,
@@ -3104,14 +4223,19 @@ function classifyOnlineWorkflowStep(
     // surface (not a specific named portal like "gmail" or "taxnetusa"),
     // treat it as headless-safe rather than session-bound. For example
     // "list_recent_sessions" is a read-only Factory API read, not a browser step.
-    const isGenericPortalOnly = portalSurface === "portal_generic"
-      || (portalSurface !== null && !/gmail|matrix_mls|taxnetusa|county_cad|comet_browser|sharepoint_onedrive/.test(portalSurface));
+    const isGenericPortalOnly =
+      portalSurface === "portal_generic" ||
+      (portalSurface !== null &&
+        !/gmail|matrix_mls|taxnetusa|county_cad|comet_browser|sharepoint_onedrive/.test(
+          portalSurface,
+        ));
     if (readOnlyHint && isGenericPortalOnly && !blockedMissingCapability) {
       return {
         is_online_workflow: true,
         portal_surface: normalizedSurface,
         execution_classification: "headless-safe",
-        classification_reason: "headless-safe read/research step (no specific actionable portal surface)",
+        classification_reason:
+          "headless-safe read/research step (no specific actionable portal surface)",
         missing_prerequisites: [],
         auth_session_needs: [],
         blocked_missing_capability: false,
@@ -3122,7 +4246,8 @@ function classifyOnlineWorkflowStep(
       is_online_workflow: true,
       portal_surface: normalizedSurface,
       execution_classification: "session-bound",
-      classification_reason: "requires authenticated browser/desktop execution surface",
+      classification_reason:
+        "requires authenticated browser/desktop execution surface",
       missing_prerequisites: missingPrerequisites,
       auth_session_needs: authSessionNeeds,
       blocked_missing_capability: false,
@@ -3149,7 +4274,9 @@ function escapeLikeLiteral(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
-function capabilityGapByBlockerKey(blockerKey: string): { memory_id: string | null; request_id: string | null } | null {
+function capabilityGapByBlockerKey(
+  blockerKey: string,
+): { memory_id: string | null; request_id: string | null } | null {
   try {
     // Use LIKE with ESCAPE '\' so \ becomes the escape character.
     // Without ESCAPE, SQLite treats \ as a plain character and _ as a
@@ -3180,37 +4307,47 @@ function capabilityGapByBlockerKey(blockerKey: string): { memory_id: string | nu
 
 type ObservationFactLabel = "fact" | "assumption";
 
-function normalizeObservationFactLabel(raw: unknown): ObservationFactLabel | null {
+function normalizeObservationFactLabel(
+  raw: unknown,
+): ObservationFactLabel | null {
   const value = asOptionalString(raw)?.toLowerCase();
   if (!value) return null;
-  if (["fact", "observed_fact", "observation", "observed"].includes(value)) return "fact";
-  if (["assumption", "inference", "inferred", "hypothesis"].includes(value)) return "assumption";
+  if (["fact", "observed_fact", "observation", "observed"].includes(value))
+    return "fact";
+  if (["assumption", "inference", "inferred", "hypothesis"].includes(value))
+    return "assumption";
   return null;
 }
 
-function inferObservationFactLabel(observation: Record<string, unknown>): ObservationFactLabel {
+function inferObservationFactLabel(
+  observation: Record<string, unknown>,
+): ObservationFactLabel {
   const explicit = normalizeObservationFactLabel(
-    observation.fact_vs_assumption ?? observation.observation_type ?? observation.label,
+    observation.fact_vs_assumption ??
+      observation.observation_type ??
+      observation.label,
   );
   if (explicit) return explicit;
 
   const summary = (
-    asOptionalString(observation.summary)
-    ?? asOptionalString(observation.content)
-    ?? asOptionalString(observation.note)
-    ?? ""
+    asOptionalString(observation.summary) ??
+    asOptionalString(observation.content) ??
+    asOptionalString(observation.note) ??
+    ""
   ).toLowerCase();
   if (/assum|hypothes|likely|estimate|unknown|unclear|infer/.test(summary)) {
     return "assumption";
   }
 
-  const evidence = asOptionalString(observation.evidence_id)
-    ?? asOptionalString(observation.evidence_url)
-    ?? asOptionalString(observation.source_record_id);
+  const evidence =
+    asOptionalString(observation.evidence_id) ??
+    asOptionalString(observation.evidence_url) ??
+    asOptionalString(observation.source_record_id);
   if (evidence) return "fact";
 
   const source = (asOptionalString(observation.source) ?? "").toLowerCase();
-  if (/vps|fleet|memory|research|monitor|tool|trace/.test(source)) return "fact";
+  if (/vps|fleet|memory|research|monitor|tool|trace/.test(source))
+    return "fact";
   return "assumption";
 }
 
@@ -3230,23 +4367,41 @@ function summarizeWorkflowTrace(
   observedAt: string,
 ): WorkflowTraceSummary {
   const trace = asRecord(rawTrace);
-  const traceId = asOptionalString(trace.trace_id) ?? `${correlationId}-trace-${index + 1}`;
-  const workflowName = asOptionalString(trace.workflow_name)
-    ?? asOptionalString(trace.name)
-    ?? `workflow-candidate-${index + 1}`;
-  const rawSteps = asArray(trace.steps ?? trace.trace ?? trace.events ?? trace.workflow_steps);
+  const traceId =
+    asOptionalString(trace.trace_id) ?? `${correlationId}-trace-${index + 1}`;
+  const workflowName =
+    asOptionalString(trace.workflow_name) ??
+    asOptionalString(trace.name) ??
+    `workflow-candidate-${index + 1}`;
+  const rawSteps = asArray(
+    trace.steps ?? trace.trace ?? trace.events ?? trace.workflow_steps,
+  );
   const steps = rawSteps.map((entry, stepIndex) => {
     const step = asRecord(entry);
     return {
       step_index: stepIndex + 1,
-      step_id: asOptionalString(step.step_id) ?? `${traceId}-step-${stepIndex + 1}`,
-      actor: asOptionalString(step.actor) ?? asOptionalString(step.owner) ?? "unknown",
-      action: asOptionalString(step.action) ?? asOptionalString(step.step) ?? asOptionalString(step.name) ?? `step-${stepIndex + 1}`,
+      step_id:
+        asOptionalString(step.step_id) ?? `${traceId}-step-${stepIndex + 1}`,
+      actor:
+        asOptionalString(step.actor) ??
+        asOptionalString(step.owner) ??
+        "unknown",
+      action:
+        asOptionalString(step.action) ??
+        asOptionalString(step.step) ??
+        asOptionalString(step.name) ??
+        `step-${stepIndex + 1}`,
       status: asOptionalString(step.status) ?? "observed",
-      handoff_to: asOptionalString(step.handoff_to) ?? asOptionalString(step.next_actor),
+      handoff_to:
+        asOptionalString(step.handoff_to) ?? asOptionalString(step.next_actor),
       blocker: asOptionalString(step.blocker) ?? asOptionalString(step.error),
-      required_capability: asOptionalString(step.required_capability) ?? asOptionalString(step.capability),
-      timestamp: asOptionalString(step.timestamp) ?? asOptionalString(step.observed_at) ?? observedAt,
+      required_capability:
+        asOptionalString(step.required_capability) ??
+        asOptionalString(step.capability),
+      timestamp:
+        asOptionalString(step.timestamp) ??
+        asOptionalString(step.observed_at) ??
+        observedAt,
     };
   });
 
@@ -3256,9 +4411,8 @@ function summarizeWorkflowTrace(
     const next = i + 1 < steps.length ? asRecord(steps[i + 1]) : null;
     const explicitHandoff = asOptionalString(current.handoff_to);
     const fromActor = asOptionalString(current.actor) ?? "unknown";
-    const toActor = explicitHandoff
-      ?? (next ? asOptionalString(next.actor) : null)
-      ?? null;
+    const toActor =
+      explicitHandoff ?? (next ? asOptionalString(next.actor) : null) ?? null;
     if (toActor && toActor !== fromActor) {
       handoffs.push({
         from_step_id: current.step_id ?? null,
@@ -3271,30 +4425,40 @@ function summarizeWorkflowTrace(
 
   const blockers = steps
     .filter((step) => {
-      const status = (asOptionalString(asRecord(step).status) ?? "").toLowerCase();
-      return status === "blocked" || Boolean(asOptionalString(asRecord(step).blocker));
+      const status = (
+        asOptionalString(asRecord(step).status) ?? ""
+      ).toLowerCase();
+      return (
+        status === "blocked" ||
+        Boolean(asOptionalString(asRecord(step).blocker))
+      );
     })
     .map((step) => {
       const s = asRecord(step);
       return {
         step_id: s.step_id ?? null,
         actor: s.actor ?? null,
-        blocker: asOptionalString(s.blocker) ?? `Step status is ${asOptionalString(s.status) ?? "blocked"}`,
+        blocker:
+          asOptionalString(s.blocker) ??
+          `Step status is ${asOptionalString(s.status) ?? "blocked"}`,
         required_capability: asOptionalString(s.required_capability),
       };
     });
 
-  const capabilityGaps = blockers.reduce<Array<Record<string, unknown>>>((acc, blocker) => {
-    const b = asRecord(blocker);
-    const capability = asOptionalString(b.required_capability);
-    if (!capability) return acc;
-    acc.push({
-      capability,
-      blocker: b.blocker ?? "workflow blocker",
-      trace_id: traceId,
-    });
-    return acc;
-  }, []);
+  const capabilityGaps = blockers.reduce<Array<Record<string, unknown>>>(
+    (acc, blocker) => {
+      const b = asRecord(blocker);
+      const capability = asOptionalString(b.required_capability);
+      if (!capability) return acc;
+      acc.push({
+        capability,
+        blocker: b.blocker ?? "workflow blocker",
+        trace_id: traceId,
+      });
+      return acc;
+    },
+    [],
+  );
 
   return {
     trace_id: traceId,
@@ -3338,17 +4502,26 @@ interface BusinessPmLoopArgs {
 async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const objective = redactSecrets((args.objective ?? "").trim());
   if (!objective) {
-    return { content: [{ type: "text", text: "Error: objective is required" }], isError: true };
+    return {
+      content: [{ type: "text", text: "Error: objective is required" }],
+      isError: true,
+    };
   }
 
   const correlationId = normalizeCorrelationId(args.correlation_id);
   const observedAt = nowIso();
   const simulateFailuresRaw = asRecord(args.simulate_failures);
-  const simulateFailures = Object.keys(simulateFailuresRaw).length > 0
-    ? (simulateFailuresRaw as SimulateFailuresConfig)
-    : undefined;
-  fleetLifecycleState.pendingApprovals = asNonNegativeInt(args.pending_approvals, 0);
-  fleetLifecycleState.blockedCapabilities = asStringArray(args.blocked_capabilities);
+  const simulateFailures =
+    Object.keys(simulateFailuresRaw).length > 0
+      ? (simulateFailuresRaw as SimulateFailuresConfig)
+      : undefined;
+  fleetLifecycleState.pendingApprovals = asNonNegativeInt(
+    args.pending_approvals,
+    0,
+  );
+  fleetLifecycleState.blockedCapabilities = asStringArray(
+    args.blocked_capabilities,
+  );
 
   // Drain retry queues from prior cycles before starting new work.
   drainRetryQueues();
@@ -3358,17 +4531,31 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   // ── Fleet startup ──
   await ensureFleetStartupLifecycle();
   if (!FLEET_CONTROL_PLANE.isConfigured()) {
-    const message = "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
+    const message =
+      "Fleet control plane is not configured; set MOTTO_MCP_URL and MOTTO_MCP_AUTH_TOKEN.";
     queueFleetRetry("cycle_preflight", correlationId, null, message);
     return {
-      content: [{ type: "text", text: JSON.stringify({
-        status: "degraded",
-        correlation_id: correlationId,
-        reason: message,
-        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
-          .filter((retry) => retry.correlation_id === correlationId),
-      }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "degraded",
+              correlation_id: correlationId,
+              reason: message,
+              pending_retries: fleetLifecycleState.pendingRetries.filter(
+                (retry) => retry.correlation_id === correlationId,
+              ),
+              pending_knowledge_retries:
+                fleetLifecycleState.pendingKnowledgeRetries.filter(
+                  (retry) => retry.correlation_id === correlationId,
+                ),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
       isError: true,
     };
   }
@@ -3378,14 +4565,27 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   } catch (error) {
     queueFleetRetry("register_agent", correlationId, null, error);
     return {
-      content: [{ type: "text", text: JSON.stringify({
-        status: "degraded",
-        correlation_id: correlationId,
-        reason: "Failed to register Hermes with fleet.",
-        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
-          .filter((retry) => retry.correlation_id === correlationId),
-      }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "degraded",
+              correlation_id: correlationId,
+              reason: "Failed to register Hermes with fleet.",
+              pending_retries: fleetLifecycleState.pendingRetries.filter(
+                (retry) => retry.correlation_id === correlationId,
+              ),
+              pending_knowledge_retries:
+                fleetLifecycleState.pendingKnowledgeRetries.filter(
+                  (retry) => retry.correlation_id === correlationId,
+                ),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
       isError: true,
     };
   }
@@ -3413,14 +4613,27 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   } catch (error) {
     queueFleetRetry("record_run_start", correlationId, null, error);
     return {
-      content: [{ type: "text", text: JSON.stringify({
-        status: "degraded",
-        correlation_id: correlationId,
-        reason: "Failed to start fleet run.",
-        pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-        pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries
-          .filter((retry) => retry.correlation_id === correlationId),
-      }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "degraded",
+              correlation_id: correlationId,
+              reason: "Failed to start fleet run.",
+              pending_retries: fleetLifecycleState.pendingRetries.filter(
+                (retry) => retry.correlation_id === correlationId,
+              ),
+              pending_knowledge_retries:
+                fleetLifecycleState.pendingKnowledgeRetries.filter(
+                  (retry) => retry.correlation_id === correlationId,
+                ),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
       isError: true,
     };
   }
@@ -3444,10 +4657,11 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const observationMemoryRecords: Array<Record<string, unknown>> = [];
   for (let i = 0; i < observations.length; i += 1) {
     const observation = asRecord(observations[i]);
-    const observationSummary = asOptionalString(observation.summary)
-      ?? asOptionalString(observation.content)
-      ?? asOptionalString(observation.note)
-      ?? `Observation ${i + 1} for objective "${objective}"`;
+    const observationSummary =
+      asOptionalString(observation.summary) ??
+      asOptionalString(observation.content) ??
+      asOptionalString(observation.note) ??
+      `Observation ${i + 1} for objective "${objective}"`;
     const storedObservation = storeTypedMemoryRecord({
       category: "observation",
       content: observationSummary,
@@ -3456,7 +4670,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         observation_index: i + 1,
       },
       trace: {
-        source: asOptionalString(observation.source) ?? "business_pm_loop_perceive",
+        source:
+          asOptionalString(observation.source) ?? "business_pm_loop_perceive",
         correlationId,
         runId,
         timestamp: asOptionalString(observation.timestamp) ?? observedAt,
@@ -3488,7 +4703,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         source: "perplexity",
         query: asOptionalString(meta.query) ?? "unknown",
         thread_id: asOptionalString(meta.thread_id) ?? null,
-        findings_snippet: asOptionalString(meta.findings)?.slice(0, 200) ?? null,
+        findings_snippet:
+          asOptionalString(meta.findings)?.slice(0, 200) ?? null,
         context: asOptionalString(meta.context) ?? null,
         tags: Array.isArray(meta.tags) ? meta.tags : [],
         ingested_at: row.created_at,
@@ -3503,20 +4719,36 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
   if (perplexityShadowObservations.length > 0) {
     console.error(
-      "[perplexity_shadow] Pulled " + String(perplexityShadowObservations.length) +
-      " recent Perplexity observations into perceive phase for correlation_id=" + correlationId,
+      "[perplexity_shadow] Pulled " +
+        String(perplexityShadowObservations.length) +
+        " recent Perplexity observations into perceive phase for correlation_id=" +
+        correlationId,
     );
   }
 
   // Consume inbound intents as signals
   const consumedInboundIntents: Array<Record<string, unknown>> = [];
-  const consumeIntentsLimit = Math.max(1, asNonNegativeInt(args.consume_intents_limit, 10));
+  const consumeIntentsLimit = Math.max(
+    1,
+    asNonNegativeInt(args.consume_intents_limit, 10),
+  );
   try {
-    if (shouldSimulateOperationFailure(simulateFailures, "consume_open_intents", "perceive")) {
+    if (
+      shouldSimulateOperationFailure(
+        simulateFailures,
+        "consume_open_intents",
+        "perceive",
+      )
+    ) {
       throw new Error("Simulated intent-consume failure");
     }
-    const consumed = await FLEET_CONTROL_PLANE.consumeOpenIntents(FLEET_AGENT_NAME, consumeIntentsLimit);
-    consumedInboundIntents.push(...asArray(consumed).map((intent) => asRecord(intent)));
+    const consumed = await FLEET_CONTROL_PLANE.consumeOpenIntents(
+      FLEET_AGENT_NAME,
+      consumeIntentsLimit,
+    );
+    consumedInboundIntents.push(
+      ...asArray(consumed).map((intent) => asRecord(intent)),
+    );
   } catch (error) {
     cycleErrors.push("consume_open_intents failed");
     queueFleetRetry("consume_open_intents", correlationId, runId, error);
@@ -3536,11 +4768,19 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const requiredSignals = asStringArray(args.required_signals);
   const observedSignalKeys = new Set<string>([
     ...observations
-      .map((obs) => asOptionalString(asRecord(obs).type) ?? asOptionalString(asRecord(obs).signal_type))
+      .map(
+        (obs) =>
+          asOptionalString(asRecord(obs).type) ??
+          asOptionalString(asRecord(obs).signal_type),
+      )
       .filter((signal): signal is string => Boolean(signal))
       .map((signal) => signal.toLowerCase()),
     ...perceivedSignals
-      .map((signal) => asOptionalString(asRecord(signal).signal_type) ?? asOptionalString(asRecord(signal).kind))
+      .map(
+        (signal) =>
+          asOptionalString(asRecord(signal).signal_type) ??
+          asOptionalString(asRecord(signal).kind),
+      )
       .filter((signal): signal is string => Boolean(signal))
       .map((signal) => signal.toLowerCase()),
   ]);
@@ -3558,18 +4798,31 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const unknownSignalCapabilityRequests: Array<Record<string, unknown>> = [];
   for (let i = 0; i < unknownSignals.length; i += 1) {
     const missing = asRecord(unknownSignals[i]);
-    const capabilityName = `signal_access_${asOptionalString(missing.signal) ?? `unknown_${i + 1}`}`;
+    const capabilityName = `signal_access_${
+      asOptionalString(missing.signal) ?? `unknown_${i + 1}`
+    }`;
     try {
-      if (FLEET_CONTROL_PLANE.isConfigured()
-        && !shouldSimulateOperationFailure(simulateFailures, "request_capability", "missing_signals")) {
-        const capabilityResult = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
-          capability: capabilityName,
-          justification: `[${correlationId}] Required signal "${asOptionalString(missing.signal) ?? "unknown"}" is unavailable; mark status as unknown/blocked and request capability access.`,
-          requested_by: FLEET_AGENT_NAME,
-        }));
+      if (
+        FLEET_CONTROL_PLANE.isConfigured() &&
+        !shouldSimulateOperationFailure(
+          simulateFailures,
+          "request_capability",
+          "missing_signals",
+        )
+      ) {
+        const capabilityResult = asRecord(
+          await FLEET_CONTROL_PLANE.requestCapability({
+            capability: capabilityName,
+            justification: `[${correlationId}] Required signal "${
+              asOptionalString(missing.signal) ?? "unknown"
+            }" is unavailable; mark status as unknown/blocked and request capability access.`,
+            requested_by: FLEET_AGENT_NAME,
+          }),
+        );
         unknownSignalCapabilityRequests.push({
           capability: capabilityName,
-          request_id: capabilityResult.id ?? capabilityResult.request_id ?? null,
+          request_id:
+            capabilityResult.id ?? capabilityResult.request_id ?? null,
           status: capabilityResult.status ?? "pending",
           source: "missing_signal",
           signal: missing.signal ?? null,
@@ -3582,7 +4835,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
     storeTypedMemoryRecord({
       category: "capability_gap",
-      content: `Signal "${asOptionalString(missing.signal) ?? "unknown"}" unavailable; status marked unknown/blocked.`,
+      content: `Signal "${
+        asOptionalString(missing.signal) ?? "unknown"
+      }" unavailable; status marked unknown/blocked.`,
       metadata: {
         source: "business_pm_loop_perceive",
         signal: missing.signal ?? null,
@@ -3604,8 +4859,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     ...(args.workflow_trace ? [args.workflow_trace] : []),
     ...asArray(args.workflow_traces),
   ];
-  const workflowSummaries: WorkflowTraceSummary[] = workflowTraces.map((trace, index) =>
-    summarizeWorkflowTrace(trace, index, correlationId, observedAt),
+  const workflowSummaries: WorkflowTraceSummary[] = workflowTraces.map(
+    (trace, index) =>
+      summarizeWorkflowTrace(trace, index, correlationId, observedAt),
   );
   const workflowCandidateRecords: Array<Record<string, unknown>> = [];
   const workflowDerivedCapabilityGaps: Array<Record<string, unknown>> = [];
@@ -3717,10 +4973,18 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   // PHASE 2: RECALL — Retrieve prior decisions, workflows, memories
   // ════════════════════════════════════════════════════════════════
 
-  const defaultRecallCategories = ["decision", "workflow", "fact", "project", "learning", "capability_gap"];
-  const recallCategories = asStringArray(args.recall_categories).length > 0
-    ? asStringArray(args.recall_categories)
-    : defaultRecallCategories;
+  const defaultRecallCategories = [
+    "decision",
+    "workflow",
+    "fact",
+    "project",
+    "learning",
+    "capability_gap",
+  ];
+  const recallCategories =
+    asStringArray(args.recall_categories).length > 0
+      ? asStringArray(args.recall_categories)
+      : defaultRecallCategories;
   const recallQuery = asOptionalString(args.recall_query) ?? objective;
   const recallLimit = asNonNegativeInt(args.recall_limit, 10);
 
@@ -3783,7 +5047,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const ingestedLocalTaskOutcomes: LocalTaskOutcome[] = [];
   if (asBool(args.ingest_completed_local_tasks, true)) {
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "list_local_tasks", "local_task_outcomes")) {
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "list_local_tasks",
+          "local_task_outcomes",
+        )
+      ) {
         throw new Error("Simulated local task outcome ingestion failure");
       }
       const outcomes = await ingestCompletedLocalTasks({
@@ -3796,26 +5066,40 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       ingestedLocalTaskOutcomes.push(...outcomes);
     } catch (error) {
       cycleErrors.push("ingest_completed_local_tasks failed");
-      queueFleetRetry("ingest_completed_local_tasks", correlationId, runId, error);
+      queueFleetRetry(
+        "ingest_completed_local_tasks",
+        correlationId,
+        runId,
+        error,
+      );
     }
   }
 
-  const simulatedLocalTaskOutcomes = asArray(args.simulated_local_task_outcomes).map((entry) => asRecord(entry));
+  const simulatedLocalTaskOutcomes = asArray(
+    args.simulated_local_task_outcomes,
+  ).map((entry) => asRecord(entry));
   for (let i = 0; i < simulatedLocalTaskOutcomes.length; i += 1) {
     const simulated = simulatedLocalTaskOutcomes[i];
-    const taskId = asOptionalString(simulated.task_id)
-      ?? asOptionalString(simulated.local_task_id)
-      ?? `${correlationId}-simulated-local-task-${i + 1}`;
+    const taskId =
+      asOptionalString(simulated.task_id) ??
+      asOptionalString(simulated.local_task_id) ??
+      `${correlationId}-simulated-local-task-${i + 1}`;
     const kind = asOptionalString(simulated.kind) ?? "browser";
-    const status = (asOptionalString(simulated.status) ?? "succeeded").toLowerCase();
+    const status = (
+      asOptionalString(simulated.status) ?? "succeeded"
+    ).toLowerCase();
     const finishedAt = asOptionalString(simulated.finished_at) ?? observedAt;
     const simulatedResult = parseMetadata(simulated.result);
-    const outcomeCategory: TypedMemoryCategory = status === "succeeded"
-      ? (kind.includes("browser") ? "workflow" : "learning")
-      : "capability_gap";
-    const outcomeContent = status === "succeeded"
-      ? `Completed local task ${taskId} (${kind}) for objective "${objective}".`
-      : `Local task ${taskId} (${kind}) finished with status "${status}".`;
+    const outcomeCategory: TypedMemoryCategory =
+      status === "succeeded"
+        ? kind.includes("browser")
+          ? "workflow"
+          : "learning"
+        : "capability_gap";
+    const outcomeContent =
+      status === "succeeded"
+        ? `Completed local task ${taskId} (${kind}) for objective "${objective}".`
+        : `Local task ${taskId} (${kind}) finished with status "${status}".`;
     const storedOutcome = storeTypedMemoryRecord({
       category: outcomeCategory,
       content: outcomeContent,
@@ -3834,7 +5118,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       },
       trace: {
         source: "local_task_completion",
-        correlationId: asOptionalString(simulated.correlation_id) ?? correlationId,
+        correlationId:
+          asOptionalString(simulated.correlation_id) ?? correlationId,
         runId: asOptionalString(simulated.run_id) ?? runId,
         taskId,
         timestamp: finishedAt,
@@ -3860,13 +5145,26 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     prior_facts: recalledMemories.filter((m) => m.category === "fact"),
     prior_projects: recalledMemories.filter((m) => m.category === "project"),
     prior_learnings: recalledMemories.filter((m) => m.category === "learning"),
-    prior_capability_gaps: recalledMemories.filter((m) => m.category === "capability_gap"),
+    prior_capability_gaps: recalledMemories.filter(
+      (m) => m.category === "capability_gap",
+    ),
     other_memories: recalledMemories.filter(
-      (m) => !["decision", "workflow", "fact", "project", "learning", "capability_gap"].includes(m.category as string),
+      (m) =>
+        ![
+          "decision",
+          "workflow",
+          "fact",
+          "project",
+          "learning",
+          "capability_gap",
+        ].includes(m.category as string),
     ),
     bridged_knowledge: recalledBridgeReferences,
     local_task_outcomes: ingestedLocalTaskOutcomes,
-    total_recalled: recalledMemories.length + recalledBridgeReferences.length + ingestedLocalTaskOutcomes.length,
+    total_recalled:
+      recalledMemories.length +
+      recalledBridgeReferences.length +
+      ingestedLocalTaskOutcomes.length,
     correlation_id: correlationId,
     generated_at: observedAt,
   };
@@ -3882,9 +5180,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     record_id: b.bridge_record_id,
     store_path: b.bridge_store_path,
   }));
-  const explicitCapabilityGaps = asArray(args.capability_gaps).map((gap) => asRecord(gap));
+  const explicitCapabilityGaps = asArray(args.capability_gaps).map((gap) =>
+    asRecord(gap),
+  );
   const missingSignalCapabilityGaps = unknownSignals.map((missing) => ({
-    capability: `signal_access_${asOptionalString(asRecord(missing).signal) ?? "unknown"}`,
+    capability: `signal_access_${
+      asOptionalString(asRecord(missing).signal) ?? "unknown"
+    }`,
     reason: asOptionalString(asRecord(missing).reason) ?? "missing signal",
     source: "missing_signal",
   }));
@@ -3892,32 +5194,46 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     const metadata = asRecord(memory.metadata);
     const source = (asOptionalString(metadata.source) ?? "").toLowerCase();
     const content = (asOptionalString(memory.content) ?? "").toLowerCase();
-    return source.startsWith("online_workflow")
-      || source === "local_task_completion"
-      || source === "workflow_trace"
-      || source === "wf1_order_intake_assets"
-      || /online workflow|portal|gmail|matrix|mls|taxnet|cad|comet|session/.test(content);
+    return (
+      source.startsWith("online_workflow") ||
+      source === "local_task_completion" ||
+      source === "workflow_trace" ||
+      source === "wf1_order_intake_assets" ||
+      /online workflow|portal|gmail|matrix|mls|taxnet|cad|comet|session/.test(
+        content,
+      )
+    );
   });
   const priorOnlineCapabilityGapRecords = recalledMemories.filter((memory) => {
     if (memory.category !== "capability_gap") return false;
     const metadata = asRecord(memory.metadata);
     const source = (asOptionalString(metadata.source) ?? "").toLowerCase();
     const content = (asOptionalString(memory.content) ?? "").toLowerCase();
-    return source.startsWith("online_workflow")
-      || source === "local_task_completion"
-      || source === "workflow_trace"
-      || /portal|session|auth|mfa|captcha|taxnet|mls|cad|gmail|browser/.test(content);
+    return (
+      source.startsWith("online_workflow") ||
+      source === "local_task_completion" ||
+      source === "workflow_trace" ||
+      /portal|session|auth|mfa|captcha|taxnet|mls|cad|gmail|browser/.test(
+        content,
+      )
+    );
   });
-  const recalledCapabilityGapInputs = priorOnlineCapabilityGapRecords.map((memory) => {
-    const metadata = asRecord(memory.metadata);
-    return {
-      capability: asOptionalString(metadata.capability),
-      reason: asOptionalString(metadata.blocker) ?? asOptionalString(memory.content) ?? "prior capability gap",
-      source: asOptionalString(metadata.source) ?? "prior_online_capability_gap",
-      memory_id: asOptionalString(memory.memory_id),
-      blocker_status: asOptionalString(metadata.blocker_status) ?? "blocked",
-    };
-  });
+  const recalledCapabilityGapInputs = priorOnlineCapabilityGapRecords.map(
+    (memory) => {
+      const metadata = asRecord(memory.metadata);
+      return {
+        capability: asOptionalString(metadata.capability),
+        reason:
+          asOptionalString(metadata.blocker) ??
+          asOptionalString(memory.content) ??
+          "prior capability gap",
+        source:
+          asOptionalString(metadata.source) ?? "prior_online_capability_gap",
+        memory_id: asOptionalString(memory.memory_id),
+        blocker_status: asOptionalString(metadata.blocker_status) ?? "blocked",
+      };
+    },
+  );
   const capabilityGaps = [
     ...explicitCapabilityGaps,
     ...workflowDerivedCapabilityGaps,
@@ -3925,7 +5241,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     ...recalledCapabilityGapInputs,
   ];
 
-  const recalledLearningRecords = recalledMemories.filter((m) => m.category === "learning" || m.category === "capability_gap");
+  const recalledLearningRecords = recalledMemories.filter(
+    (m) => m.category === "learning" || m.category === "capability_gap",
+  );
   const localTaskOutcomeEvidenceIds = ingestedLocalTaskOutcomes
     .map((outcome) => outcome.memory_id || outcome.task_id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
@@ -3933,26 +5251,38 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     .map((memory) => asOptionalString(memory.memory_id))
     .filter((id): id is string => Boolean(id));
   const capabilityGapEvidenceIds = capabilityGaps
-    .map((gap) => asOptionalString(asRecord(gap).memory_id) ?? asOptionalString(asRecord(gap).capability))
+    .map(
+      (gap) =>
+        asOptionalString(asRecord(gap).memory_id) ??
+        asOptionalString(asRecord(gap).capability),
+    )
     .filter((id): id is string => Boolean(id));
   const learningInfluencedChanges: string[] = [];
   let executeSafePriority: "high" | "medium" | "low" = "high";
-  let resolveBlockersPriority: "high" | "medium" | "low" = capabilityGaps.length > 0 ? "high" : "medium";
-  let resolveBlockersStatus: "ready" | "blocked" = capabilityGaps.length > 0 ? "blocked" : "ready";
+  let resolveBlockersPriority: "high" | "medium" | "low" =
+    capabilityGaps.length > 0 ? "high" : "medium";
+  let resolveBlockersStatus: "ready" | "blocked" =
+    capabilityGaps.length > 0 ? "blocked" : "ready";
 
   for (const learningRecord of recalledLearningRecords) {
-    const content = (asOptionalString(learningRecord.content) ?? "").toLowerCase();
+    const content = (
+      asOptionalString(learningRecord.content) ?? ""
+    ).toLowerCase();
     if (/blocked|missing|failed|unknown|unable|gap|pending/.test(content)) {
       resolveBlockersPriority = "high";
       resolveBlockersStatus = "blocked";
       learningInfluencedChanges.push(
-        `Prior learning ${asOptionalString(learningRecord.memory_id) ?? "unknown"} indicates blocker risk, so blocker-resolution priority was raised.`,
+        `Prior learning ${
+          asOptionalString(learningRecord.memory_id) ?? "unknown"
+        } indicates blocker risk, so blocker-resolution priority was raised.`,
       );
     }
     if (/success|succeeded|completed|resolved|unblocked/.test(content)) {
       executeSafePriority = "medium";
       learningInfluencedChanges.push(
-        `Prior learning ${asOptionalString(learningRecord.memory_id) ?? "unknown"} indicates successful completion, so execution priority was tempered for validation focus.`,
+        `Prior learning ${
+          asOptionalString(learningRecord.memory_id) ?? "unknown"
+        } indicates successful completion, so execution priority was tempered for validation focus.`,
       );
     }
   }
@@ -3971,8 +5301,12 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     );
   }
 
-  const succeededOutcomes = ingestedLocalTaskOutcomes.filter((outcome) => outcome.status === "succeeded");
-  const failedOutcomes = ingestedLocalTaskOutcomes.filter((outcome) => ["failed", "cancelled", "blocked"].includes(outcome.status));
+  const succeededOutcomes = ingestedLocalTaskOutcomes.filter(
+    (outcome) => outcome.status === "succeeded",
+  );
+  const failedOutcomes = ingestedLocalTaskOutcomes.filter((outcome) =>
+    ["failed", "cancelled", "blocked"].includes(outcome.status),
+  );
   if (succeededOutcomes.length > 0) {
     executeSafePriority = "medium";
     learningInfluencedChanges.push(
@@ -3987,14 +5321,21 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     );
   }
 
-  if (learningInfluencedChanges.length === 0 && recalledLearningRecords.length > 0) {
+  if (
+    learningInfluencedChanges.length === 0 &&
+    recalledLearningRecords.length > 0
+  ) {
     learningInfluencedChanges.push(
       `Prior learning records (${recalledLearningRecords.length}) were cited and retained as planning evidence with no additional risk/priority override.`,
     );
   }
 
-  const nextCheckAt = new Date(Date.parse(observedAt) + (30 * 60 * 1000)).toISOString();
-  const dueAt = new Date(Date.parse(observedAt) + (24 * 60 * 60 * 1000)).toISOString();
+  const nextCheckAt = new Date(
+    Date.parse(observedAt) + 30 * 60 * 1000,
+  ).toISOString();
+  const dueAt = new Date(
+    Date.parse(observedAt) + 24 * 60 * 60 * 1000,
+  ).toISOString();
 
   const planActions = [
     {
@@ -4006,10 +5347,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       timing: "immediate",
       due_at: dueAt,
       next_check_at: nextCheckAt,
-      success_criteria: "All observations categorized with provenance and fact-vs-assumption labels",
+      success_criteria:
+        "All observations categorized with provenance and fact-vs-assumption labels",
       status: "ready",
       ready_state: "ready",
-      evidence_ids: observationMemoryRecords.map((record) => asOptionalString(record.memory_id)).filter((id): id is string => Boolean(id)),
+      evidence_ids: observationMemoryRecords
+        .map((record) => asOptionalString(record.memory_id))
+        .filter((id): id is string => Boolean(id)),
     },
     {
       step: "Integrate recalled decisions and workflows into current plan",
@@ -4020,21 +5364,39 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       timing: "immediate",
       due_at: dueAt,
       next_check_at: nextCheckAt,
-      success_criteria: "Prior context properly referenced and applied to recommendations",
-      status: (citedRecordIds.length > 0 || localTaskOutcomeEvidenceIds.length > 0 || priorOnlineObservationEvidenceIds.length > 0) ? "ready" : "blocked",
-      ready_state: (citedRecordIds.length > 0 || localTaskOutcomeEvidenceIds.length > 0 || priorOnlineObservationEvidenceIds.length > 0) ? "ready" : "blocked",
-      evidence_ids: [...citedRecordIds, ...localTaskOutcomeEvidenceIds, ...priorOnlineObservationEvidenceIds],
+      success_criteria:
+        "Prior context properly referenced and applied to recommendations",
+      status:
+        citedRecordIds.length > 0 ||
+        localTaskOutcomeEvidenceIds.length > 0 ||
+        priorOnlineObservationEvidenceIds.length > 0
+          ? "ready"
+          : "blocked",
+      ready_state:
+        citedRecordIds.length > 0 ||
+        localTaskOutcomeEvidenceIds.length > 0 ||
+        priorOnlineObservationEvidenceIds.length > 0
+          ? "ready"
+          : "blocked",
+      evidence_ids: [
+        ...citedRecordIds,
+        ...localTaskOutcomeEvidenceIds,
+        ...priorOnlineObservationEvidenceIds,
+      ],
     },
     {
       step: "Execute safe proposed actions",
       owner: "hermes",
       target_agent: "hermes",
       priority: executeSafePriority,
-      dependencies: ["Integrate recalled decisions and workflows into current plan"],
+      dependencies: [
+        "Integrate recalled decisions and workflows into current plan",
+      ],
       timing: "next_cycle",
       due_at: dueAt,
       next_check_at: nextCheckAt,
-      success_criteria: "All safe actions completed or queued with traceable records",
+      success_criteria:
+        "All safe actions completed or queued with traceable records",
       status: "ready",
       ready_state: "ready",
       evidence_ids: [],
@@ -4048,7 +5410,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       timing: "next_cycle",
       due_at: dueAt,
       next_check_at: nextCheckAt,
-      success_criteria: "Blockers resolved, or capability requests/local tasks created with correlation links",
+      success_criteria:
+        "Blockers resolved, or capability requests/local tasks created with correlation links",
       status: resolveBlockersStatus,
       ready_state: resolveBlockersStatus === "blocked" ? "blocked" : "ready",
       evidence_ids: capabilityGapEvidenceIds,
@@ -4062,7 +5425,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       timing: "end_of_cycle",
       due_at: dueAt,
       next_check_at: nextCheckAt,
-      success_criteria: "All learnings and decisions persisted with typed metadata and source provenance",
+      success_criteria:
+        "All learnings and decisions persisted with typed metadata and source provenance",
       status: "ready",
       ready_state: "ready",
       evidence_ids: [],
@@ -4073,7 +5437,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     ...priorOnlineCapabilityGapRecords.map((memory) => ({
       source_memory_id: asOptionalString(memory.memory_id),
       recommended_classification: "blocked",
-      rationale: asOptionalString(memory.content) ?? "prior capability gap remains blocked",
+      rationale:
+        asOptionalString(memory.content) ??
+        "prior capability gap remains blocked",
     })),
     ...succeededOutcomes.map((outcome) => ({
       source_memory_id: outcome.memory_id,
@@ -4091,7 +5457,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     seeded_workflow_awareness: {
       source_paths: seededWorkflowAwareness.source_paths,
       wf1_step_count: seededWorkflowAwareness.wf1_steps.length,
-      order_intake_field_count: seededWorkflowAwareness.order_intake_fields.length,
+      order_intake_field_count:
+        seededWorkflowAwareness.order_intake_fields.length,
       handoff_count: seededWorkflowAwareness.handoff_points.length,
       seeded_record_id: asOptionalString(seededWorkflowRecord?.memory_id),
     },
@@ -4105,13 +5472,17 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       source: asOptionalString(asRecord(memory.metadata).source),
       summary: asOptionalString(memory.content),
     })),
-    prior_online_capability_gaps: priorOnlineCapabilityGapRecords.map((memory) => ({
-      memory_id: asOptionalString(memory.memory_id),
-      capability: asOptionalString(asRecord(memory.metadata).capability),
-      source: asOptionalString(asRecord(memory.metadata).source),
-      blocker_status: asOptionalString(asRecord(memory.metadata).blocker_status) ?? "blocked",
-      summary: asOptionalString(memory.content),
-    })),
+    prior_online_capability_gaps: priorOnlineCapabilityGapRecords.map(
+      (memory) => ({
+        memory_id: asOptionalString(memory.memory_id),
+        capability: asOptionalString(asRecord(memory.metadata).capability),
+        source: asOptionalString(asRecord(memory.metadata).source),
+        blocker_status:
+          asOptionalString(asRecord(memory.metadata).blocker_status) ??
+          "blocked",
+        summary: asOptionalString(memory.content),
+      }),
+    ),
     local_task_feedback: {
       outcome_count: ingestedLocalTaskOutcomes.length,
       outcomes: ingestedLocalTaskOutcomes,
@@ -4123,9 +5494,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     online_step_recommendations: onlineStepRecommendations,
     unknown_signals: unknownSignals,
     actions: planActions,
-    summary: recalledMemories.length > 0
-      ? `Plan synthesized with ${recalledMemories.length} recalled memory records, ${recalledBridgeReferences.length} bridged references, ${ingestedLocalTaskOutcomes.length} local-task outcome(s), and ${learningInfluencedChanges.length} learning-driven adjustment(s). Seeded WF1/order-intake assets informed online workflow awareness.`
-      : "Plan synthesized from current observations/objective and seeded WF1/order-intake workflow assets.",
+    summary:
+      recalledMemories.length > 0
+        ? `Plan synthesized with ${recalledMemories.length} recalled memory records, ${recalledBridgeReferences.length} bridged references, ${ingestedLocalTaskOutcomes.length} local-task outcome(s), and ${learningInfluencedChanges.length} learning-driven adjustment(s). Seeded WF1/order-intake assets informed online workflow awareness.`
+        : "Plan synthesized from current observations/objective and seeded WF1/order-intake workflow assets.",
   };
 
   // ════════════════════════════════════════════════════════════════
@@ -4139,7 +5511,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const proposalRecordLinks: Array<Record<string, unknown>> = [];
   const signaledIntents: Array<Record<string, unknown>> = [];
   const queuedLocalTasks: Array<Record<string, unknown>> = [];
-  const filedCapabilityRequests: Array<Record<string, unknown>> = [...unknownSignalCapabilityRequests];
+  const filedCapabilityRequests: Array<Record<string, unknown>> = [
+    ...unknownSignalCapabilityRequests,
+  ];
   const onlineStepClassifications: Array<Record<string, unknown>> = [];
   const onlineSuccessEvidence: Array<Record<string, unknown>> = [];
   const onlineFailureBlockers: Array<Record<string, unknown>> = [];
@@ -4152,16 +5526,31 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       .map((s) => asOptionalString(asRecord(s).signal))
       .filter((s): s is string => Boolean(s));
     const riskClassification = classifyActionRisk(action, blockedSignalNames);
-    const onlineProfile = classifyOnlineWorkflowStep(action, riskClassification);
-    const actionReference = asOptionalString(action.action ?? action.type ?? action.kind) ?? `proposed_action_${i}`;
+    const onlineProfile = classifyOnlineWorkflowStep(
+      action,
+      riskClassification,
+    );
+    const actionReference =
+      asOptionalString(action.action ?? action.type ?? action.kind) ??
+      `proposed_action_${i}`;
     let onlineFailure = classifyOnlineFailureType(action, onlineProfile);
-    const onlineEvidence = buildOnlineEvidenceRecord(action, onlineProfile, observedAt);
-    if (onlineProfile.is_online_workflow && onlineEvidence.success_claim && !onlineEvidence.evidence_complete) {
+    const onlineEvidence = buildOnlineEvidenceRecord(
+      action,
+      onlineProfile,
+      observedAt,
+    );
+    if (
+      onlineProfile.is_online_workflow &&
+      onlineEvidence.success_claim &&
+      !onlineEvidence.evidence_complete
+    ) {
       onlineFailure = {
         failure_type: "missing_evidence",
         blocker_type: "online_missing_evidence",
         provider: onlineEvidence.provider,
-        message: `Online success claim for "${actionReference}" is missing required evidence fields: ${onlineEvidence.missing_fields.join(", ")}`,
+        message: `Online success claim for "${actionReference}" is missing required evidence fields: ${onlineEvidence.missing_fields.join(
+          ", ",
+        )}`,
         missing_prerequisites: [],
         auth_session_needs: [],
         requires_capability_request: false,
@@ -4174,11 +5563,15 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     ]);
     const effectiveAuthSessionNeeds = onlineFailure?.auth_session_needs.length
       ? onlineFailure.auth_session_needs
-      : inferAuthSessionNeeds(onlineProfile.portal_surface ?? "portal_generic", effectiveMissingPrerequisites);
-    const effectiveExecutionClassification: OnlineExecutionClassification = onlineFailure
-      ? "blocked"
-      : onlineProfile.execution_classification;
-    let actionStatus = riskClassification.blocked ? "awaiting_approval" : (asOptionalString(action.status) ?? "ready");
+      : inferAuthSessionNeeds(
+          onlineProfile.portal_surface ?? "portal_generic",
+          effectiveMissingPrerequisites,
+        );
+    const effectiveExecutionClassification: OnlineExecutionClassification =
+      onlineFailure ? "blocked" : onlineProfile.execution_classification;
+    let actionStatus = riskClassification.blocked
+      ? "awaiting_approval"
+      : asOptionalString(action.status) ?? "ready";
     if (!riskClassification.blocked) {
       if (onlineFailure) {
         actionStatus = `blocked_${onlineFailure.failure_type}`;
@@ -4203,7 +5596,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       ...action,
       risk_level: riskClassification.risk_level,
       approval_required: riskClassification.approval_required,
-      expected_outcome: asOptionalString(action.expected_outcome) ?? asOptionalString(action.description) ?? `Outcome of action: ${actionReference}`,
+      expected_outcome:
+        asOptionalString(action.expected_outcome) ??
+        asOptionalString(action.description) ??
+        `Outcome of action: ${actionReference}`,
       status: actionStatus,
       execution_classification: effectiveExecutionClassification,
       portal_surface: onlineProfile.portal_surface,
@@ -4234,7 +5630,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         action_reference: actionReference,
         execution_classification: effectiveExecutionClassification,
         portal_surface: onlineProfile.portal_surface,
-        classification_reason: onlineFailure?.message ?? onlineProfile.classification_reason,
+        classification_reason:
+          onlineFailure?.message ?? onlineProfile.classification_reason,
         missing_prerequisites: effectiveMissingPrerequisites,
         blocker_type: onlineFailure?.blocker_type ?? null,
         failure_type: onlineFailure?.failure_type ?? null,
@@ -4245,18 +5642,29 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       });
     }
 
-    const isBlocked = riskClassification.blocked || onlineProfile.blocked_missing_capability || Boolean(onlineFailure);
+    const isBlocked =
+      riskClassification.blocked ||
+      onlineProfile.blocked_missing_capability ||
+      Boolean(onlineFailure);
     if (isBlocked) {
       const blockedRecord = {
         action_reference: actionReference,
         risk_level: riskClassification.risk_level,
-        blocker_type: onlineFailure?.blocker_type ?? (onlineProfile.blocked_missing_capability ? "online_missing_capability" : "approval_required"),
+        blocker_type:
+          onlineFailure?.blocker_type ??
+          (onlineProfile.blocked_missing_capability
+            ? "online_missing_capability"
+            : "approval_required"),
         failure_type: onlineFailure?.failure_type ?? null,
         provider: onlineFailure?.provider ?? onlineEvidence.provider,
         portal_surface: onlineProfile.portal_surface,
         blocked_reason: onlineProfile.blocked_missing_capability
-          ? `Missing online workflow prerequisites: ${effectiveMissingPrerequisites.join(", ")}`
-          : (onlineFailure?.message ?? riskClassification.blocked_reason ?? "Action requires approval"),
+          ? `Missing online workflow prerequisites: ${effectiveMissingPrerequisites.join(
+              ", ",
+            )}`
+          : onlineFailure?.message ??
+            riskClassification.blocked_reason ??
+            "Action requires approval",
         missing_prerequisites: effectiveMissingPrerequisites,
         auth_session_needs: effectiveAuthSessionNeeds,
         original_action: action,
@@ -4272,7 +5680,11 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       // Persist an approval request in memory
       const approvalMemory = storeTypedMemoryRecord({
         category: "approval_request",
-        content: `Approval required for ${riskClassification.risk_level} action: ${actionReference}. ${riskClassification.blocked_reason ?? ""}`,
+        content: `Approval required for ${
+          riskClassification.risk_level
+        } action: ${actionReference}. ${
+          riskClassification.blocked_reason ?? ""
+        }`,
         metadata: {
           proposed_action_index: i,
           action_reference: actionReference,
@@ -4299,17 +5711,34 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       proposalLink.link_status = "approval_requested";
 
       // Create a capability request for the blocked action if it needs a specific capability
-      if (riskClassification.risk_level === "dangerous-global-mutation"
-        && FLEET_CONTROL_PLANE.isConfigured()
-        && !onlineProfile.is_online_workflow) {
+      if (
+        riskClassification.risk_level === "dangerous-global-mutation" &&
+        FLEET_CONTROL_PLANE.isConfigured() &&
+        !onlineProfile.is_online_workflow
+      ) {
         try {
-          if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "propose")) {
-            const capabilityResult = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
-              capability: `approval_for_${riskClassification.risk_level}_action`,
-              justification: `[${correlationId}] Action "${actionReference}" is classified as ${riskClassification.risk_level} and requires explicit human approval: ${riskClassification.blocked_reason ?? "policy requires approval"}`,
-              requested_by: FLEET_AGENT_NAME,
-            }));
-            const capabilityRequestId = asIdentifier(capabilityResult.id) ?? asIdentifier(capabilityResult.request_id);
+          if (
+            !shouldSimulateOperationFailure(
+              simulateFailures,
+              "request_capability",
+              "propose",
+            )
+          ) {
+            const capabilityResult = asRecord(
+              await FLEET_CONTROL_PLANE.requestCapability({
+                capability: `approval_for_${riskClassification.risk_level}_action`,
+                justification: `[${correlationId}] Action "${actionReference}" is classified as ${
+                  riskClassification.risk_level
+                } and requires explicit human approval: ${
+                  riskClassification.blocked_reason ??
+                  "policy requires approval"
+                }`,
+                requested_by: FLEET_AGENT_NAME,
+              }),
+            );
+            const capabilityRequestId =
+              asIdentifier(capabilityResult.id) ??
+              asIdentifier(capabilityResult.request_id);
             filedCapabilityRequests.push({
               capability: `approval_for_${riskClassification.risk_level}_action`,
               request_id: capabilityRequestId,
@@ -4327,35 +5756,61 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       }
     }
 
-    const shouldFileOnlineCapabilityRequest = onlineProfile.is_online_workflow
-      && Boolean(onlineProfile.portal_surface)
-      && (effectiveMissingPrerequisites.length > 0 || Boolean(onlineFailure?.requires_capability_request));
+    const shouldFileOnlineCapabilityRequest =
+      onlineProfile.is_online_workflow &&
+      Boolean(onlineProfile.portal_surface) &&
+      (effectiveMissingPrerequisites.length > 0 ||
+        Boolean(onlineFailure?.requires_capability_request));
     if (shouldFileOnlineCapabilityRequest && onlineProfile.portal_surface) {
-      const blockerDescriptor = effectiveMissingPrerequisites.length > 0
-        ? effectiveMissingPrerequisites.join("|")
-        : (onlineFailure?.failure_type ?? actionReference);
-      const blockerKey = normalizeHandle(`${onlineProfile.portal_surface}:${blockerDescriptor}`);
+      const blockerDescriptor =
+        effectiveMissingPrerequisites.length > 0
+          ? effectiveMissingPrerequisites.join("|")
+          : onlineFailure?.failure_type ?? actionReference;
+      const blockerKey = normalizeHandle(
+        `${onlineProfile.portal_surface}:${blockerDescriptor}`,
+      );
       const existingFromCycle = cycleBlockerRequestMap.get(blockerKey);
       const existingFromMemory = capabilityGapByBlockerKey(blockerKey);
-      const knownRequestId = existingFromCycle ?? existingFromMemory?.request_id ?? null;
+      const knownRequestId =
+        existingFromCycle ?? existingFromMemory?.request_id ?? null;
       let capabilityRequestId: string | null = knownRequestId;
-      let capabilityRequestStatus = knownRequestId ? "reused_existing" : "pending";
-      const primaryCapability = effectiveMissingPrerequisites[0]
-        ?? ONLINE_SURFACE_DEFAULT_CAPABILITY[onlineProfile.portal_surface]
-        ?? "portal_authenticated_session";
+      let capabilityRequestStatus = knownRequestId
+        ? "reused_existing"
+        : "pending";
+      const primaryCapability =
+        effectiveMissingPrerequisites[0] ??
+        ONLINE_SURFACE_DEFAULT_CAPABILITY[onlineProfile.portal_surface] ??
+        "portal_authenticated_session";
 
       if (!knownRequestId && FLEET_CONTROL_PLANE.isConfigured()) {
         try {
-          if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "online_workflow")) {
-            const capabilityResult = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
-              capability: primaryCapability,
-              justification: `[${correlationId}] ${onlineProfile.portal_surface} workflow step "${actionReference}" is blocked by ${
-                onlineFailure ? `${onlineFailure.failure_type}: ${onlineFailure.message}` : `missing prerequisite(s): ${effectiveMissingPrerequisites.join(", ")}`
-              }.`,
-              requested_by: FLEET_AGENT_NAME,
-            }));
-            capabilityRequestId = asIdentifier(capabilityResult.id) ?? asIdentifier(capabilityResult.request_id);
-            capabilityRequestStatus = asOptionalString(capabilityResult.status) ?? "pending";
+          if (
+            !shouldSimulateOperationFailure(
+              simulateFailures,
+              "request_capability",
+              "online_workflow",
+            )
+          ) {
+            const capabilityResult = asRecord(
+              await FLEET_CONTROL_PLANE.requestCapability({
+                capability: primaryCapability,
+                justification: `[${correlationId}] ${
+                  onlineProfile.portal_surface
+                } workflow step "${actionReference}" is blocked by ${
+                  onlineFailure
+                    ? `${onlineFailure.failure_type}: ${onlineFailure.message}`
+                    : `missing prerequisite(s): ${effectiveMissingPrerequisites.join(
+                        ", ",
+                      )}`
+                }.`,
+                requested_by: FLEET_AGENT_NAME,
+              }),
+            );
+            capabilityRequestId =
+              asIdentifier(capabilityResult.id) ??
+              asIdentifier(capabilityResult.request_id);
+            capabilityRequestStatus =
+              asOptionalString(capabilityResult.status) ?? "pending";
             cycleBlockerRequestMap.set(blockerKey, capabilityRequestId ?? null);
           }
         } catch (error) {
@@ -4371,10 +5826,14 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         request_id: capabilityRequestId,
         status: capabilityRequestStatus,
         requested_by: FLEET_AGENT_NAME,
-        source: capabilityRequestStatus === "reused_existing" ? "online_portal_prerequisite_reused" : "online_portal_prerequisite",
+        source:
+          capabilityRequestStatus === "reused_existing"
+            ? "online_portal_prerequisite_reused"
+            : "online_portal_prerequisite",
         portal_surface: onlineProfile.portal_surface,
         blocker_key: blockerKey,
-        blocker_type: onlineFailure?.blocker_type ?? "online_missing_capability",
+        blocker_type:
+          onlineFailure?.blocker_type ?? "online_missing_capability",
         failure_type: onlineFailure?.failure_type ?? null,
         provider: onlineFailure?.provider ?? onlineEvidence.provider,
         prerequisites: effectiveMissingPrerequisites,
@@ -4384,7 +5843,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
       const gapMemory = storeTypedMemoryRecord({
         category: "capability_gap",
-        content: `[${correlationId}] Online workflow blocker for ${onlineProfile.portal_surface}: ${
+        content: `[${correlationId}] Online workflow blocker for ${
+          onlineProfile.portal_surface
+        }: ${
           onlineFailure
             ? `${onlineFailure.failure_type} (${onlineFailure.message})`
             : effectiveMissingPrerequisites.join(", ")
@@ -4392,7 +5853,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         metadata: {
           source: "online_workflow_blocker",
           blocker_key: blockerKey,
-          blocker_type: onlineFailure?.blocker_type ?? "online_missing_capability",
+          blocker_type:
+            onlineFailure?.blocker_type ?? "online_missing_capability",
           failure_type: onlineFailure?.failure_type ?? null,
           provider: onlineFailure?.provider ?? onlineEvidence.provider,
           failure_message: onlineFailure?.message ?? null,
@@ -4403,7 +5865,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           auth_session_needs: effectiveAuthSessionNeeds,
           evidence: onlineEvidence,
           action_reference: actionReference,
-          blocker_status: effectiveExecutionClassification === "blocked" ? "blocked" : "session-bound",
+          blocker_status:
+            effectiveExecutionClassification === "blocked"
+              ? "blocked"
+              : "session-bound",
         },
         trace: {
           source: "online_workflow_blocker",
@@ -4418,49 +5883,76 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       proposalLink.capability_gap_memory_id = gapMemory.id;
       proposalLink.blocker_key = blockerKey;
       if (proposalLink.link_status === "classified") {
-        proposalLink.link_status = capabilityRequestStatus === "reused_existing"
-          ? "capability_reused"
-          : "capability_requested";
+        proposalLink.link_status =
+          capabilityRequestStatus === "reused_existing"
+            ? "capability_reused"
+            : "capability_requested";
       }
     }
 
-    const shouldQueueOnlineLocalTask = onlineProfile.requires_local_task || Boolean(onlineFailure?.requires_local_task);
-    if (shouldQueueOnlineLocalTask && FLEET_CONTROL_PLANE.isConfigured() && !proposalLink.local_task_id) {
+    const shouldQueueOnlineLocalTask =
+      onlineProfile.requires_local_task ||
+      Boolean(onlineFailure?.requires_local_task);
+    if (
+      shouldQueueOnlineLocalTask &&
+      FLEET_CONTROL_PLANE.isConfigured() &&
+      !proposalLink.local_task_id
+    ) {
       const portal = onlineProfile.portal_surface ?? "portal_generic";
-      const blockerKey = normalizeHandle(`${portal}:${effectiveMissingPrerequisites.join("|") || onlineFailure?.failure_type || actionReference}`);
+      const blockerKey = normalizeHandle(
+        `${portal}:${
+          effectiveMissingPrerequisites.join("|") ||
+          onlineFailure?.failure_type ||
+          actionReference
+        }`,
+      );
       try {
-        if (!shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "propose")) {
-          const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
-            kind: "browser",
-            payload: {
-              action_reference: actionReference,
-              action_index: i,
-              portal_surface: portal,
-              execution_classification: effectiveExecutionClassification,
-              auth_session_needs: effectiveAuthSessionNeeds,
-              missing_prerequisites: effectiveMissingPrerequisites,
-              online_failure_type: onlineFailure?.failure_type ?? null,
-              online_blocker_type: onlineFailure?.blocker_type ?? null,
-              online_failure_message: onlineFailure?.message ?? null,
-              online_evidence: onlineEvidence,
-              correlation_id: correlationId,
-              run_id: runId,
-              objective,
-              queued_at: observedAt,
-              created_by: FLEET_AGENT_NAME,
-            },
-            description: `Session-bound online step for ${portal}: ${actionReference}`,
-            source: FLEET_AGENT_NAME,
-            dedup_key: `${correlationId}:online:${i}:${blockerKey}`,
-            ttl_seconds: 600,
-          }));
-          const localTaskId = asOptionalString(queued.task_id) ?? asOptionalString(queued.id) ?? asOptionalString(queued.local_task_id);
+        if (
+          !shouldSimulateOperationFailure(
+            simulateFailures,
+            "queue_local_task",
+            "propose",
+          )
+        ) {
+          const queued = asRecord(
+            await FLEET_CONTROL_PLANE.queueLocalTask({
+              kind: "browser",
+              payload: {
+                action_reference: actionReference,
+                action_index: i,
+                portal_surface: portal,
+                execution_classification: effectiveExecutionClassification,
+                auth_session_needs: effectiveAuthSessionNeeds,
+                missing_prerequisites: effectiveMissingPrerequisites,
+                online_failure_type: onlineFailure?.failure_type ?? null,
+                online_blocker_type: onlineFailure?.blocker_type ?? null,
+                online_failure_message: onlineFailure?.message ?? null,
+                online_evidence: onlineEvidence,
+                correlation_id: correlationId,
+                run_id: runId,
+                objective,
+                queued_at: observedAt,
+                created_by: FLEET_AGENT_NAME,
+              },
+              description: `Session-bound online step for ${portal}: ${actionReference}`,
+              source: FLEET_AGENT_NAME,
+              dedup_key: `${correlationId}:online:${i}:${blockerKey}`,
+              ttl_seconds: 600,
+            }),
+          );
+          const localTaskId =
+            asOptionalString(queued.task_id) ??
+            asOptionalString(queued.id) ??
+            asOptionalString(queued.local_task_id);
           queuedLocalTasks.push({
             task_id: localTaskId,
             kind: "browser",
             source: FLEET_AGENT_NAME,
             status: queued.status ?? queued.state ?? null,
-            reason: effectiveExecutionClassification === "blocked" ? "blocked_online_step" : "session_bound_online_step",
+            reason:
+              effectiveExecutionClassification === "blocked"
+                ? "blocked_online_step"
+                : "session_bound_online_step",
             portal_surface: portal,
             action_reference: actionReference,
             auth_session_needs: effectiveAuthSessionNeeds,
@@ -4477,9 +5969,12 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     }
 
     if (onlineProfile.is_online_workflow) {
-      const onlineRecordCategory: TypedMemoryCategory = effectiveExecutionClassification === "blocked"
-        ? "capability_gap"
-        : (effectiveExecutionClassification === "session-bound" ? "workflow" : "learning");
+      const onlineRecordCategory: TypedMemoryCategory =
+        effectiveExecutionClassification === "blocked"
+          ? "capability_gap"
+          : effectiveExecutionClassification === "session-bound"
+            ? "workflow"
+            : "learning";
       const storedOnlineRecord = storeTypedMemoryRecord({
         category: onlineRecordCategory,
         content: `[${correlationId}] Online workflow observation for ${actionReference}: ${effectiveExecutionClassification}.`,
@@ -4488,7 +5983,8 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           action_reference: actionReference,
           portal_surface: onlineProfile.portal_surface,
           execution_classification: effectiveExecutionClassification,
-          classification_reason: onlineFailure?.message ?? onlineProfile.classification_reason,
+          classification_reason:
+            onlineFailure?.message ?? onlineProfile.classification_reason,
           missing_prerequisites: effectiveMissingPrerequisites,
           auth_session_needs: effectiveAuthSessionNeeds,
           blocker_type: onlineFailure?.blocker_type ?? null,
@@ -4503,7 +5999,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           correlationId,
           runId,
           timestamp: observedAt,
-          confidence: effectiveExecutionClassification === "headless-safe" ? "medium" : "high",
+          confidence:
+            effectiveExecutionClassification === "headless-safe"
+              ? "medium"
+              : "high",
         },
       });
       onlineObservationRecords.push({
@@ -4524,15 +6023,23 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const coordinationIntentRequests = asArray(args.coordination_intents);
   for (let index = 0; index < coordinationIntentRequests.length; index += 1) {
     const intentReq = asRecord(coordinationIntentRequests[index]);
-    const targetAgent = typeof intentReq.target_agent === "string" ? intentReq.target_agent.trim() : "";
-    const kind = typeof intentReq.kind === "string" ? intentReq.kind.trim() : "";
+    const targetAgent =
+      typeof intentReq.target_agent === "string"
+        ? intentReq.target_agent.trim()
+        : "";
+    const kind =
+      typeof intentReq.kind === "string" ? intentReq.kind.trim() : "";
     if (!targetAgent || !kind) {
-      cycleErrors.push(`coordination_intents[${index}] missing target_agent or kind`);
+      cycleErrors.push(
+        `coordination_intents[${index}] missing target_agent or kind`,
+      );
       continue;
     }
-    const sourceAgent = typeof intentReq.source_agent === "string" && intentReq.source_agent.trim().length > 0
-      ? intentReq.source_agent.trim()
-      : FLEET_AGENT_NAME;
+    const sourceAgent =
+      typeof intentReq.source_agent === "string" &&
+      intentReq.source_agent.trim().length > 0
+        ? intentReq.source_agent.trim()
+        : FLEET_AGENT_NAME;
     const payload = redactMetadata({
       ...asRecord(intentReq.payload),
       correlation_id: correlationId,
@@ -4541,15 +6048,23 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       requested_at: observedAt,
     }) as Record<string, unknown>;
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "signal_intent", "propose")) {
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "signal_intent",
+          "propose",
+        )
+      ) {
         throw new Error("Simulated signal_intent failure");
       }
-      const result = asRecord(await FLEET_CONTROL_PLANE.signalIntent({
-        target_agent: targetAgent,
-        kind,
-        payload,
-        source_agent: sourceAgent,
-      }));
+      const result = asRecord(
+        await FLEET_CONTROL_PLANE.signalIntent({
+          target_agent: targetAgent,
+          kind,
+          payload,
+          source_agent: sourceAgent,
+        }),
+      );
       signaledIntents.push({
         intent_id: result.intent_id ?? null,
         target_agent: targetAgent,
@@ -4557,7 +6072,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         source_agent: sourceAgent,
       });
     } catch (error) {
-      cycleErrors.push(`signal_intent failed for coordination_intents[${index}]`);
+      cycleErrors.push(
+        `signal_intent failed for coordination_intents[${index}]`,
+      );
       queueFleetRetry("signal_intent", correlationId, runId, error);
     }
   }
@@ -4579,28 +6096,41 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       queued_at: observedAt,
       created_by: FLEET_AGENT_NAME,
     }) as Record<string, unknown>;
-    const source = typeof taskReq.source === "string" && taskReq.source.trim().length > 0
-      ? taskReq.source.trim()
-      : FLEET_AGENT_NAME;
-    const description = typeof taskReq.description === "string" && taskReq.description.trim().length > 0
-      ? taskReq.description
-      : `Local/browser task for ${objective} [${correlationId}]`;
-    const dedupKey = typeof taskReq.dedup_key === "string" && taskReq.dedup_key.trim().length > 0
-      ? taskReq.dedup_key
-      : `${correlationId}:local:${index}:${kind}`;
+    const source =
+      typeof taskReq.source === "string" && taskReq.source.trim().length > 0
+        ? taskReq.source.trim()
+        : FLEET_AGENT_NAME;
+    const description =
+      typeof taskReq.description === "string" &&
+      taskReq.description.trim().length > 0
+        ? taskReq.description
+        : `Local/browser task for ${objective} [${correlationId}]`;
+    const dedupKey =
+      typeof taskReq.dedup_key === "string" &&
+      taskReq.dedup_key.trim().length > 0
+        ? taskReq.dedup_key
+        : `${correlationId}:local:${index}:${kind}`;
     const ttlSeconds = Math.max(60, asNonNegativeInt(taskReq.ttl_seconds, 600));
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "queue_local_task", "propose")) {
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "queue_local_task",
+          "propose",
+        )
+      ) {
         throw new Error("Simulated queue_local_task failure");
       }
-      const queued = asRecord(await FLEET_CONTROL_PLANE.queueLocalTask({
-        kind,
-        payload,
-        description,
-        source,
-        dedup_key: dedupKey,
-        ttl_seconds: ttlSeconds,
-      }));
+      const queued = asRecord(
+        await FLEET_CONTROL_PLANE.queueLocalTask({
+          kind,
+          payload,
+          description,
+          source,
+          dedup_key: dedupKey,
+          ttl_seconds: ttlSeconds,
+        }),
+      );
       queuedLocalTasks.push({
         task_id: queued.task_id ?? queued.id ?? queued.local_task_id ?? null,
         kind,
@@ -4614,17 +6144,31 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   }
 
   // File capability requests derived from workflow traces
-  for (let index = 0; index < workflowDerivedCapabilityGaps.length; index += 1) {
+  for (
+    let index = 0;
+    index < workflowDerivedCapabilityGaps.length;
+    index += 1
+  ) {
     const gap = asRecord(workflowDerivedCapabilityGaps[index]);
     const capability = asOptionalString(gap.capability);
     if (!capability) continue;
     try {
-      if (!shouldSimulateOperationFailure(simulateFailures, "request_capability", "workflow_trace")) {
-        const result = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
-          capability,
-          justification: `[${correlationId}] Workflow trace blocker requires capability "${capability}" (${asOptionalString(gap.reason) ?? "workflow blocker"}).`,
-          requested_by: FLEET_AGENT_NAME,
-        }));
+      if (
+        !shouldSimulateOperationFailure(
+          simulateFailures,
+          "request_capability",
+          "workflow_trace",
+        )
+      ) {
+        const result = asRecord(
+          await FLEET_CONTROL_PLANE.requestCapability({
+            capability,
+            justification: `[${correlationId}] Workflow trace blocker requires capability "${capability}" (${
+              asOptionalString(gap.reason) ?? "workflow blocker"
+            }).`,
+            requested_by: FLEET_AGENT_NAME,
+          }),
+        );
         filedCapabilityRequests.push({
           capability,
           request_id: result.id ?? result.request_id ?? null,
@@ -4635,7 +6179,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         });
       }
     } catch (error) {
-      cycleErrors.push(`request_capability for workflow trace gap ${index} failed`);
+      cycleErrors.push(
+        `request_capability for workflow trace gap ${index} failed`,
+      );
       queueFleetRetry("request_capability", correlationId, runId, error);
     }
   }
@@ -4644,27 +6190,42 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
   const capabilityRequests = asArray(args.capability_requests);
   for (let index = 0; index < capabilityRequests.length; index += 1) {
     const req = asRecord(capabilityRequests[index]);
-    const capability = typeof req.capability === "string" ? req.capability.trim() : "";
-    const justificationRaw = typeof req.justification === "string" ? req.justification.trim() : "";
+    const capability =
+      typeof req.capability === "string" ? req.capability.trim() : "";
+    const justificationRaw =
+      typeof req.justification === "string" ? req.justification.trim() : "";
     if (!capability || !justificationRaw) {
-      cycleErrors.push(`capability_requests[${index}] missing capability or justification`);
+      cycleErrors.push(
+        `capability_requests[${index}] missing capability or justification`,
+      );
       continue;
     }
-    const requestedBy = typeof req.requested_by === "string" && req.requested_by.trim().length > 0
-      ? req.requested_by.trim()
-      : FLEET_AGENT_NAME;
-    const justification = redactSecrets(justificationRaw.includes(correlationId)
-      ? justificationRaw
-      : `[${correlationId}] ${justificationRaw}`);
+    const requestedBy =
+      typeof req.requested_by === "string" && req.requested_by.trim().length > 0
+        ? req.requested_by.trim()
+        : FLEET_AGENT_NAME;
+    const justification = redactSecrets(
+      justificationRaw.includes(correlationId)
+        ? justificationRaw
+        : `[${correlationId}] ${justificationRaw}`,
+    );
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "request_capability", "capability_requests")) {
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "request_capability",
+          "capability_requests",
+        )
+      ) {
         throw new Error("Simulated request_capability failure");
       }
-      const result = asRecord(await FLEET_CONTROL_PLANE.requestCapability({
-        capability,
-        justification,
-        requested_by: requestedBy,
-      }));
+      const result = asRecord(
+        await FLEET_CONTROL_PLANE.requestCapability({
+          capability,
+          justification,
+          requested_by: requestedBy,
+        }),
+      );
       filedCapabilityRequests.push({
         capability,
         request_id: result.id ?? result.request_id ?? null,
@@ -4672,7 +6233,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         requested_by: requestedBy,
       });
     } catch (error) {
-      cycleErrors.push(`request_capability failed for capability_requests[${index}]`);
+      cycleErrors.push(
+        `request_capability failed for capability_requests[${index}]`,
+      );
       queueFleetRetry("request_capability", correlationId, runId, error);
     }
   }
@@ -4721,7 +6284,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         material: learning.material,
       },
       trace: {
-        source: asOptionalString(learning.metadata.source) ?? "business_pm_loop_learning",
+        source:
+          asOptionalString(learning.metadata.source) ??
+          "business_pm_loop_learning",
         correlationId,
         runId,
         timestamp: observedAt,
@@ -4739,7 +6304,12 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     // Bridge material/repeated learnings to motto-skills
     if (learning.repeated || learning.material) {
       try {
-        const bridge = bridgeLearningToMottoSkills(learning, correlationId, runId, learningMemory.id);
+        const bridge = bridgeLearningToMottoSkills(
+          learning,
+          correlationId,
+          runId,
+          learningMemory.id,
+        );
         const bridgeMemory = storeTypedMemoryRecord({
           category: learning.category,
           content: `Bridged learning to ${bridge.store_type} (${bridge.record_id})`,
@@ -4762,14 +6332,20 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         });
         mottoSkillsBridges.push({ ...bridge, memory_id: bridgeMemory.id });
       } catch (error) {
-        cycleErrors.push(`motto_skills_bridge failed for learning[${learning.index}]`);
+        cycleErrors.push(
+          `motto_skills_bridge failed for learning[${learning.index}]`,
+        );
         queueKnowledgeRetry("motto_skills_bridge", correlationId, runId, error);
       }
     }
   }
 
   // Always persist a decision record from the cycle outcome
-  const cycleDecisionContent = `Business PM loop decision for objective: ${objective}. ${normalizedLearnings.length > 0 ? `Based on ${normalizedLearnings.length} learning(s).` : "No explicit learnings provided; cycle completed observation and planning phases."}`;
+  const cycleDecisionContent = `Business PM loop decision for objective: ${objective}. ${
+    normalizedLearnings.length > 0
+      ? `Based on ${normalizedLearnings.length} learning(s).`
+      : "No explicit learnings provided; cycle completed observation and planning phases."
+  }`;
   const cycleDecision = storeTypedMemoryRecord({
     category: "decision",
     content: cycleDecisionContent,
@@ -4780,7 +6356,9 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       recalled_memory_count: recalledMemories.length,
       recalled_bridge_count: recalledBridgeReferences.length,
       blocked_action_count: blockedActions.length,
-      approved_action_count: classifiedActions.filter((a) => a.status !== "awaiting_approval").length,
+      approved_action_count: classifiedActions.filter(
+        (a) => a.status !== "awaiting_approval",
+      ).length,
       plan_action_count: planActions.length,
     },
     trace: {
@@ -4799,7 +6377,15 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
   // Persist a learning record even if no explicit learnings were provided
   if (normalizedLearnings.length === 0) {
-    const implicitLearningContent = `Implicit learning from business PM loop: Objective "${objective}" was processed with ${recalledMemories.length} recalled memories, ${observations.length} observations, and ${proposedActions.length} proposed actions. ${blockedActions.length > 0 ? `${blockedActions.length} action(s) were blocked pending approval.` : "No actions were blocked."}`;
+    const implicitLearningContent = `Implicit learning from business PM loop: Objective "${objective}" was processed with ${
+      recalledMemories.length
+    } recalled memories, ${observations.length} observations, and ${
+      proposedActions.length
+    } proposed actions. ${
+      blockedActions.length > 0
+        ? `${blockedActions.length} action(s) were blocked pending approval.`
+        : "No actions were blocked."
+    }`;
     const implicitLearning = storeTypedMemoryRecord({
       category: "learning",
       content: implicitLearningContent,
@@ -4855,8 +6441,16 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
     let eventId: number | null = null;
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "record_event", section.section)) {
-        throw new Error(`Simulated record_event failure for ${section.section}`);
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "record_event",
+          section.section,
+        )
+      ) {
+        throw new Error(
+          `Simulated record_event failure for ${section.section}`,
+        );
       }
       const eventRes = await FLEET_CONTROL_PLANE.recordEvent({
         agent_name: FLEET_AGENT_NAME,
@@ -4870,19 +6464,35 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           data: safeData,
         },
         run_id: runId,
-        level: section.section === "propose" && blockedActions.length > 0 ? "warn" : "info",
+        level:
+          section.section === "propose" && blockedActions.length > 0
+            ? "warn"
+            : "info",
       });
       const rawEventId = asRecord(eventRes).event_id;
       eventId = typeof rawEventId === "number" ? rawEventId : null;
     } catch (error) {
       cycleErrors.push(`record_event(${section.section}) failed`);
-      queueFleetRetry(`record_event(${section.section})`, correlationId, runId, error);
+      queueFleetRetry(
+        `record_event(${section.section})`,
+        correlationId,
+        runId,
+        error,
+      );
     }
 
     let artifactId: number | null = null;
     try {
-      if (shouldSimulateOperationFailure(simulateFailures, "record_artifact_content", section.section)) {
-        throw new Error(`Simulated record_artifact_content failure for ${section.section}`);
+      if (
+        shouldSimulateOperationFailure(
+          simulateFailures,
+          "record_artifact_content",
+          section.section,
+        )
+      ) {
+        throw new Error(
+          `Simulated record_artifact_content failure for ${section.section}`,
+        );
       }
       const artifactRes = await FLEET_CONTROL_PLANE.recordArtifactContent({
         agent_name: FLEET_AGENT_NAME,
@@ -4904,7 +6514,12 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       artifactId = typeof rawArtifactId === "number" ? rawArtifactId : null;
     } catch (error) {
       cycleErrors.push(`record_artifact_content(${section.section}) failed`);
-      queueFleetRetry(`record_artifact_content(${section.section})`, correlationId, runId, error);
+      queueFleetRetry(
+        `record_artifact_content(${section.section})`,
+        correlationId,
+        runId,
+        error,
+      );
     }
 
     emittedSections.push({
@@ -4938,7 +6553,12 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     knowledgeRecordId = knowledgeWrite.memoryId;
   } else {
     cycleErrors.push("knowledge_store_write failed");
-    queueKnowledgeRetry("cycle_knowledge_write", correlationId, runId, knowledgeWrite.error ?? "unknown knowledge-store failure");
+    queueKnowledgeRetry(
+      "cycle_knowledge_write",
+      correlationId,
+      runId,
+      knowledgeWrite.error ?? "unknown knowledge-store failure",
+    );
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -4950,8 +6570,11 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
     observed_signals: observations.map((obs) => ({
       source: asOptionalString(asRecord(obs).source) ?? "unknown",
       type: asOptionalString(asRecord(obs).type) ?? "observation",
-      summary: asOptionalString(asRecord(obs).summary ?? asRecord(obs).content) ?? "signal observed",
-      fact_vs_assumption: asOptionalString(asRecord(obs).fact_vs_assumption) ?? "assumption",
+      summary:
+        asOptionalString(asRecord(obs).summary ?? asRecord(obs).content) ??
+        "signal observed",
+      fact_vs_assumption:
+        asOptionalString(asRecord(obs).fact_vs_assumption) ?? "assumption",
     })),
     unknown_signals: unknownSignals,
     active_projects: recalledMemories
@@ -4966,11 +6589,16 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         memory_id: m.memory_id,
         summary: asOptionalString(m.content) ?? "active workflow",
       }))
-      .concat(workflowCandidateRecords.map((candidate) => ({
-        memory_id: asOptionalString(candidate.memory_id) ?? null,
-        summary: `Workflow candidate: ${asOptionalString(candidate.workflow_name) ?? "workflow"}`,
-      }))),
-    pending_approvals: blockedActions.length + fleetLifecycleState.pendingApprovals,
+      .concat(
+        workflowCandidateRecords.map((candidate) => ({
+          memory_id: asOptionalString(candidate.memory_id) ?? null,
+          summary: `Workflow candidate: ${
+            asOptionalString(candidate.workflow_name) ?? "workflow"
+          }`,
+        })),
+      ),
+    pending_approvals:
+      blockedActions.length + fleetLifecycleState.pendingApprovals,
     blocked_capabilities: currentBlockedCapabilities(
       unknownSignals
         .map((signal) => asOptionalString(asRecord(signal).signal))
@@ -4981,34 +6609,55 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
             .filter((capability): capability is string => Boolean(capability)),
         ),
     ),
-    risks: blockedActions.map((ba) => ({
-      action: asOptionalString(asRecord(ba).action_reference) ?? "unknown",
-      risk_level: asOptionalString(asRecord(ba).risk_level) ?? "unknown",
-      reason: asOptionalString(asRecord(ba).blocked_reason) ?? "requires approval",
-    })).concat(
-      unknownSignals.map((signal) => ({
-        action: asOptionalString(asRecord(signal).signal) ?? "unknown_signal",
-        risk_level: "blocked-input",
-        reason: asOptionalString(asRecord(signal).reason) ?? "required signal unavailable",
-      })),
-    ),
+    risks: blockedActions
+      .map((ba) => ({
+        action: asOptionalString(asRecord(ba).action_reference) ?? "unknown",
+        risk_level: asOptionalString(asRecord(ba).risk_level) ?? "unknown",
+        reason:
+          asOptionalString(asRecord(ba).blocked_reason) ?? "requires approval",
+      }))
+      .concat(
+        unknownSignals.map((signal) => ({
+          action: asOptionalString(asRecord(signal).signal) ?? "unknown_signal",
+          risk_level: "blocked-input",
+          reason:
+            asOptionalString(asRecord(signal).reason) ??
+            "required signal unavailable",
+        })),
+      ),
     online_learning: {
       classifications: {
-        headless_safe: onlineStepClassifications.filter((step) => asOptionalString(step.execution_classification) === "headless-safe").length,
-        session_bound: onlineStepClassifications.filter((step) => asOptionalString(step.execution_classification) === "session-bound").length,
-        blocked: onlineStepClassifications.filter((step) => asOptionalString(step.execution_classification) === "blocked").length,
+        headless_safe: onlineStepClassifications.filter(
+          (step) =>
+            asOptionalString(step.execution_classification) === "headless-safe",
+        ).length,
+        session_bound: onlineStepClassifications.filter(
+          (step) =>
+            asOptionalString(step.execution_classification) === "session-bound",
+        ).length,
+        blocked: onlineStepClassifications.filter(
+          (step) =>
+            asOptionalString(step.execution_classification) === "blocked",
+        ).length,
       },
-      continue_safe_learning_when_blocked:
-        onlineStepClassifications.some((step) => asOptionalString(step.execution_classification) === "blocked")
-        ? (
-          onlineStepClassifications.some((step) => asOptionalString(step.execution_classification) === "headless-safe")
-          || seededWorkflowAwareness.wf1_steps.length > 0
-        )
+      continue_safe_learning_when_blocked: onlineStepClassifications.some(
+        (step) => asOptionalString(step.execution_classification) === "blocked",
+      )
+        ? onlineStepClassifications.some(
+            (step) =>
+              asOptionalString(step.execution_classification) ===
+              "headless-safe",
+          ) || seededWorkflowAwareness.wf1_steps.length > 0
         : true,
       blocked_portal_surfaces: uniqueStrings(
         onlineStepClassifications
-          .filter((step) => asOptionalString(step.execution_classification) === "blocked")
-          .map((step) => asOptionalString(step.portal_surface) ?? "portal_generic"),
+          .filter(
+            (step) =>
+              asOptionalString(step.execution_classification) === "blocked",
+          )
+          .map(
+            (step) => asOptionalString(step.portal_surface) ?? "portal_generic",
+          ),
       ),
     },
     perplexity_awareness: {
@@ -5020,12 +6669,19 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
           query: asOptionalString(asRecord(obs).query)?.slice(0, 200) ?? null,
           thread_id: asOptionalString(asRecord(obs).thread_id) ?? null,
           ingested_at: asOptionalString(asRecord(obs).ingested_at) ?? null,
-          has_findings: Boolean(asOptionalString(asRecord(obs).findings_snippet)),
+          has_findings: Boolean(
+            asOptionalString(asRecord(obs).findings_snippet),
+          ),
         })),
-      derived_awareness: perplexityShadowObservations.length > 0
-        ? `Hermes is aware of ${perplexityShadowObservations.length} recent Perplexity research observations, ` +
-          `including ${perplexityShadowObservations.filter((obs) => asOptionalString(asRecord(obs).findings_snippet)).length} with findings.`
-        : "No Perplexity shadow observations available. Use perplexity_ingest to push Perplexity research context.",
+      derived_awareness:
+        perplexityShadowObservations.length > 0
+          ? `Hermes is aware of ${perplexityShadowObservations.length} recent Perplexity research observations, ` +
+            `including ${
+              perplexityShadowObservations.filter((obs) =>
+                asOptionalString(asRecord(obs).findings_snippet),
+              ).length
+            } with findings.`
+          : "No Perplexity shadow observations available. Use perplexity_ingest to push Perplexity research context.",
     },
     next_steps: planActions.map((pa) => ({
       step: pa.step,
@@ -5033,8 +6689,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       status: pa.status,
     })),
     kpi_counters: {
-      pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId).length,
-      pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries.filter((retry) => retry.correlation_id === correlationId).length,
+      pending_retries: fleetLifecycleState.pendingRetries.filter(
+        (retry) => retry.correlation_id === correlationId,
+      ).length,
+      pending_knowledge_retries:
+        fleetLifecycleState.pendingKnowledgeRetries.filter(
+          (retry) => retry.correlation_id === correlationId,
+        ).length,
       blocked_actions: blockedActions.length,
       capability_requests_filed: filedCapabilityRequests.length,
       cycle_errors: cycleErrors.length,
@@ -5047,7 +6708,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
   // Emit status report as fleet event/artifact
   try {
-    if (!shouldSimulateOperationFailure(simulateFailures, "record_artifact_content", "status_report")) {
+    if (
+      !shouldSimulateOperationFailure(
+        simulateFailures,
+        "record_artifact_content",
+        "status_report",
+      )
+    ) {
       await FLEET_CONTROL_PLANE.recordArtifactContent({
         agent_name: FLEET_AGENT_NAME,
         kind: "business_status_report",
@@ -5056,16 +6723,28 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         run_id: runId,
         intent: objective,
         repo: BUILD_INFO.repository,
-        meta: { correlation_id: correlationId, run_id: runId, section: "status_report", structured: true, generated_at: observedAt },
+        meta: {
+          correlation_id: correlationId,
+          run_id: runId,
+          section: "status_report",
+          structured: true,
+          generated_at: observedAt,
+        },
       });
     }
   } catch (error) {
     cycleErrors.push("record_artifact_content(status_report) failed");
-    queueFleetRetry("record_artifact_content(status_report)", correlationId, runId, error);
+    queueFleetRetry(
+      "record_artifact_content(status_report)",
+      correlationId,
+      runId,
+      error,
+    );
   }
 
   // ── End fleet run ──
-  const finalStatus: "success" | "error" = cycleErrors.length === 0 ? "success" : "error";
+  const finalStatus: "success" | "error" =
+    cycleErrors.length === 0 ? "success" : "error";
 
   try {
     await FLEET_CONTROL_PLANE.recordRunEnd({
@@ -5076,9 +6755,13 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
         objective,
         emitted_sections: emittedSections,
         errors: cycleErrors,
-        pending_retry_count: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId).length,
-        pending_knowledge_retry_count: fleetLifecycleState.pendingKnowledgeRetries
-          .filter((retry) => retry.correlation_id === correlationId).length,
+        pending_retry_count: fleetLifecycleState.pendingRetries.filter(
+          (retry) => retry.correlation_id === correlationId,
+        ).length,
+        pending_knowledge_retry_count:
+          fleetLifecycleState.pendingKnowledgeRetries.filter(
+            (retry) => retry.correlation_id === correlationId,
+          ).length,
         knowledge_record_id: knowledgeRecordId,
         learning_count: learningMemoryRecords.length,
         decision_count: decisionMemoryRecords.length,
@@ -5091,7 +6774,10 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
 
   fleetLifecycleState.lastLearnCycle = observedAt;
   try {
-    await sendFleetHeartbeat(finalStatus === "success" ? "idle" : "degraded", objective);
+    await sendFleetHeartbeat(
+      finalStatus === "success" ? "idle" : "degraded",
+      objective,
+    );
   } catch (error) {
     queueFleetRetry("heartbeat_pm_loop_end", correlationId, runId, error);
   }
@@ -5111,14 +6797,27 @@ async function handleBusinessPmLoop(args: BusinessPmLoopArgs) {
       errors: cycleErrors,
       emitted_sections: emittedSections,
       knowledge_record_id: knowledgeRecordId,
-      pending_retries: fleetLifecycleState.pendingRetries.filter((retry) => retry.correlation_id === correlationId),
-      pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries.filter((retry) => retry.correlation_id === correlationId),
-      heartbeat: buildHeartbeatStatus(finalStatus === "success" ? "idle" : "degraded", objective),
+      pending_retries: fleetLifecycleState.pendingRetries.filter(
+        (retry) => retry.correlation_id === correlationId,
+      ),
+      pending_knowledge_retries:
+        fleetLifecycleState.pendingKnowledgeRetries.filter(
+          (retry) => retry.correlation_id === correlationId,
+        ),
+      heartbeat: buildHeartbeatStatus(
+        finalStatus === "success" ? "idle" : "degraded",
+        objective,
+      ),
     },
   };
 
   return {
-    content: [{ type: "text", text: JSON.stringify(redactMetadata(loopResult), null, 2) }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(redactMetadata(loopResult), null, 2),
+      },
+    ],
     isError: finalStatus !== "success",
   };
 }
@@ -5136,7 +6835,10 @@ async function handlePerplexityIngest(args: {
 }) {
   const query = redactSecrets((args.query ?? "").trim());
   if (!query) {
-    return { content: [{ type: "text", text: "Error: query is required" }], isError: true };
+    return {
+      content: [{ type: "text", text: "Error: query is required" }],
+      isError: true,
+    };
   }
 
   const correlationId = normalizeCorrelationId(args.correlation_id);
@@ -5177,24 +6879,33 @@ async function handlePerplexityIngest(args: {
   });
 
   console.error(
-    "[perplexity_shadow] Ingested query into memory_id=" + record.id +
-    " correlation_id=" + correlationId +
-    " query_len=" + String(query.length),
+    "[perplexity_shadow] Ingested query into memory_id=" +
+      record.id +
+      " correlation_id=" +
+      correlationId +
+      " query_len=" +
+      String(query.length),
   );
 
   return {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        status: "ingested",
-        memory_id: record.id,
-        category: record.category,
-        query,
-        thread_id: threadId,
-        correlation_id: correlationId,
-        ingested_at: observedAt,
-      }, null, 2),
-    }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            status: "ingested",
+            memory_id: record.id,
+            category: record.category,
+            query,
+            thread_id: threadId,
+            correlation_id: correlationId,
+            ingested_at: observedAt,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
   };
 }
 
@@ -5219,7 +6930,8 @@ async function handlePerplexityShadowStatus(args: {
         memory_id: row.id,
         query: asOptionalString(meta.query) ?? "unknown",
         thread_id: asOptionalString(meta.thread_id) ?? null,
-        findings_snippet: asOptionalString(meta.findings)?.slice(0, 300) ?? null,
+        findings_snippet:
+          asOptionalString(meta.findings)?.slice(0, 300) ?? null,
         context: asOptionalString(meta.context) ?? null,
         source_url: asOptionalString(meta.source_url) ?? null,
         tags: Array.isArray(meta.tags) ? meta.tags : [],
@@ -5232,21 +6944,32 @@ async function handlePerplexityShadowStatus(args: {
     // Best-effort
   }
 
-  const summary = perplexityRecords.length > 0
-    ? `${perplexityRecords.length} Perplexity shadow observations available (${perplexityRecords.filter((r) => r.findings_snippet).length} with findings).`
-    : "No Perplexity shadow observations found yet. Use perplexity_ingest to push Perplexity research context.";
+  const summary =
+    perplexityRecords.length > 0
+      ? `${
+          perplexityRecords.length
+        } Perplexity shadow observations available (${
+          perplexityRecords.filter((r) => r.findings_snippet).length
+        } with findings).`
+      : "No Perplexity shadow observations found yet. Use perplexity_ingest to push Perplexity research context.";
 
   return {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        summary,
-        observation_count: perplexityRecords.length,
-        observations: perplexityRecords,
-        correlation_id: correlationId,
-        generated_at: observedAt,
-      }, null, 2),
-    }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            summary,
+            observation_count: perplexityRecords.length,
+            observations: perplexityRecords,
+            correlation_id: correlationId,
+            generated_at: observedAt,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
   };
 }
 
@@ -5255,50 +6978,79 @@ async function handlePerplexityShadowStatus(args: {
 async function handleFactoryListSessions(args: Record<string, unknown>) {
   const limit = typeof args.limit === "number" ? args.limit : 10;
   const sessions = await listSessions(Math.min(limit, 50));
-  return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }] };
+  return {
+    content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }],
+  };
 }
 
 async function handleFactoryGetSession(args: Record<string, unknown>) {
   const sessionId = typeof args.session_id === "string" ? args.session_id : "";
   if (!sessionId) throw new Error("session_id is required");
   const includeMessages = args.include_messages === true;
-  const messageLimit = typeof args.message_limit === "number" ? args.message_limit : 50;
+  const messageLimit =
+    typeof args.message_limit === "number" ? args.message_limit : 50;
   const session = await getSession(sessionId);
   let messages: unknown[] | undefined;
   if (includeMessages) {
     messages = await getSessionMessages(sessionId, Math.min(messageLimit, 100));
   }
   return {
-    content: [{
-      type: "text",
-      text: JSON.stringify({ ...session, messages: messages ?? undefined }, null, 2),
-    }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          { ...session, messages: messages ?? undefined },
+          null,
+          2,
+        ),
+      },
+    ],
   };
 }
 
-function resolveFactorySessionId(session: Record<string, unknown>): string | null {
+function resolveFactorySessionId(
+  session: Record<string, unknown>,
+): string | null {
   return asOptionalString(session.sessionId) ?? asOptionalString(session.id);
 }
 
 function buildAutoloopCursor(session: Record<string, unknown>): string {
-  const messageId = asOptionalString(session.latest_assistant_message_id) ?? "none";
-  const summary = (asOptionalString(session.latest_summary) ?? "").slice(0, 120);
+  const messageId =
+    asOptionalString(session.latest_assistant_message_id) ?? "none";
+  const summary = (asOptionalString(session.latest_summary) ?? "").slice(
+    0,
+    120,
+  );
   return `${messageId}|${summary}`;
 }
 
-function replaceTrackedSessionId(sessionIds: string[], oldSessionId: string, newSessionId: string): string[] {
-  const updated = sessionIds.map((id) => (id === oldSessionId ? newSessionId : id));
+function replaceTrackedSessionId(
+  sessionIds: string[],
+  oldSessionId: string,
+  newSessionId: string,
+): string[] {
+  const updated = sessionIds.map((id) =>
+    id === oldSessionId ? newSessionId : id,
+  );
   if (!updated.includes(newSessionId)) updated.push(newSessionId);
   return dedupeStrings(updated);
 }
 
 function isConnectedComputerError(errorMessage: string): boolean {
   const normalized = errorMessage.toLowerCase();
-  return normalized.includes("connected computer") || normalized.includes("requires a connected computer");
+  return (
+    normalized.includes("connected computer") ||
+    normalized.includes("requires a connected computer")
+  );
 }
 
-function parseSessionComputerId(session: Record<string, unknown>): string | null {
-  return asOptionalString(session.computer_id) ?? asOptionalString(session.computerId);
+function parseSessionComputerId(
+  session: Record<string, unknown>,
+): string | null {
+  return (
+    asOptionalString(session.computer_id) ??
+    asOptionalString(session.computerId)
+  );
 }
 
 function formatConfidence(value: unknown): string {
@@ -5350,17 +7102,24 @@ async function inspectFactorySessions(args: {
   require_citations?: unknown;
 }) {
   const includeMessages = args.include_messages === true;
-  const messageLimit = Math.max(1, Math.min(100, asNonNegativeInt(args.message_limit, 20)));
+  const messageLimit = Math.max(
+    1,
+    Math.min(100, asNonNegativeInt(args.message_limit, 20)),
+  );
   const completionKeywords = asStringArray(args.completion_keywords);
-  const effectiveCompletionKeywords = completionKeywords.length > 0
-    ? completionKeywords
-    : DEFAULT_COMPLETION_KEYWORDS;
+  const effectiveCompletionKeywords =
+    completionKeywords.length > 0
+      ? completionKeywords
+      : DEFAULT_COMPLETION_KEYWORDS;
   const minConfidence = normalizeConfidenceThreshold(args.min_confidence);
   const requireCitations = asBool(args.require_citations, false);
   const blockedKeywords = DEFAULT_BLOCKED_KEYWORDS;
 
   const explicitIds = dedupeStrings(asStringArray(args.session_ids));
-  const fallbackLimit = Math.max(1, Math.min(50, asNonNegativeInt(args.limit, 10)));
+  const fallbackLimit = Math.max(
+    1,
+    Math.min(50, asNonNegativeInt(args.limit, 10)),
+  );
 
   let targetSessionIds = explicitIds;
   if (targetSessionIds.length === 0) {
@@ -5373,15 +7132,22 @@ async function inspectFactorySessions(args: {
   }
 
   if (targetSessionIds.length === 0) {
-    throw new Error("No sessions found. Provide session_ids or ensure Factory list_sessions has results.");
+    throw new Error(
+      "No sessions found. Provide session_ids or ensure Factory list_sessions has results.",
+    );
   }
 
   const snapshots: Array<Record<string, unknown>> = [];
   for (const sessionId of targetSessionIds) {
     try {
       const session = asRecord(await getSession(sessionId));
-      const sessionStatus = (asOptionalString(session.status) ?? "unknown").toLowerCase();
-      const title = asOptionalString(session.title) ?? asOptionalString(session.summary) ?? null;
+      const sessionStatus = (
+        asOptionalString(session.status) ?? "unknown"
+      ).toLowerCase();
+      const title =
+        asOptionalString(session.title) ??
+        asOptionalString(session.summary) ??
+        null;
       let messages: unknown[] = [];
       if (includeMessages || messageLimit > 0) {
         messages = await getSessionMessages(sessionId, messageLimit);
@@ -5390,18 +7156,32 @@ async function inspectFactorySessions(args: {
       const latestAssistant = latestAssistantMessageSnapshot(messages);
       const latestSummary = latestAssistant.summary;
       const latestAssistantText = latestAssistant.full_text;
-      const completionKeywordHit = textHasAnyKeyword(latestAssistantText ?? latestSummary, effectiveCompletionKeywords);
-      const blocked = textHasAnyKeyword(latestAssistantText ?? latestSummary, blockedKeywords);
-      const confidenceScore = extractConfidenceScore(latestAssistantText ?? latestSummary);
-      const citationUrls = extractCitationUrls(latestAssistantText ?? latestSummary);
-      const confidencePassed = minConfidence === null
-        || (confidenceScore !== null && confidenceScore >= minConfidence);
+      const completionKeywordHit = textHasAnyKeyword(
+        latestAssistantText ?? latestSummary,
+        effectiveCompletionKeywords,
+      );
+      const blocked = textHasAnyKeyword(
+        latestAssistantText ?? latestSummary,
+        blockedKeywords,
+      );
+      const confidenceScore = extractConfidenceScore(
+        latestAssistantText ?? latestSummary,
+      );
+      const citationUrls = extractCitationUrls(
+        latestAssistantText ?? latestSummary,
+      );
+      const confidencePassed =
+        minConfidence === null ||
+        (confidenceScore !== null && confidenceScore >= minConfidence);
       const citationPassed = !requireCitations || citationUrls.length > 0;
-      const completionGatePassed = completionKeywordHit && confidencePassed && citationPassed;
+      const completionGatePassed =
+        completionKeywordHit && confidencePassed && citationPassed;
       let completionGateReason: string | null = null;
       if (completionKeywordHit && !completionGatePassed) {
         if (!confidencePassed && minConfidence !== null) {
-          completionGateReason = `confidence_below_threshold(required=${minConfidence.toFixed(2)}, observed=${formatConfidence(confidenceScore)})`;
+          completionGateReason = `confidence_below_threshold(required=${minConfidence.toFixed(
+            2,
+          )}, observed=${formatConfidence(confidenceScore)})`;
         } else if (!citationPassed) {
           completionGateReason = "citations_missing";
         } else {
@@ -5426,7 +7206,10 @@ async function inspectFactorySessions(args: {
         completion_gate_passed: completionGatePassed,
         completion_gate_reason: completionGateReason,
         computer_id: sessionComputerId,
-        updated_at: asOptionalString(session.updatedAt) ?? asOptionalString(session.updated_at) ?? null,
+        updated_at:
+          asOptionalString(session.updatedAt) ??
+          asOptionalString(session.updated_at) ??
+          null,
         messages: includeMessages ? messages : undefined,
       });
     } catch (error) {
@@ -5445,16 +7228,27 @@ async function inspectFactorySessions(args: {
         completion_gate_reason: "session_fetch_error",
         computer_id: null,
         updated_at: null,
-        error: redactSecrets(error instanceof Error ? error.message : String(error)),
+        error: redactSecrets(
+          error instanceof Error ? error.message : String(error),
+        ),
       });
     }
   }
 
-  const completedCount = snapshots.filter((snapshot) => snapshot.completed === true).length;
-  const blockedCount = snapshots.filter((snapshot) => snapshot.blocked === true).length;
-  const runningCount = snapshots.filter((snapshot) => snapshot.status === "running").length;
-  const completionGateFailedCount = snapshots.filter((snapshot) => snapshot.completion_keyword_hit === true
-    && snapshot.completion_gate_passed !== true).length;
+  const completedCount = snapshots.filter(
+    (snapshot) => snapshot.completed === true,
+  ).length;
+  const blockedCount = snapshots.filter(
+    (snapshot) => snapshot.blocked === true,
+  ).length;
+  const runningCount = snapshots.filter(
+    (snapshot) => snapshot.status === "running",
+  ).length;
+  const completionGateFailedCount = snapshots.filter(
+    (snapshot) =>
+      snapshot.completion_keyword_hit === true &&
+      snapshot.completion_gate_passed !== true,
+  ).length;
 
   return {
     sessions: snapshots,
@@ -5477,18 +7271,27 @@ async function inspectFactorySessions(args: {
 async function handleFactorySyncSessions(args: Record<string, unknown>) {
   const report = await inspectFactorySessions(args);
   return {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        status: "ok",
-        ...report,
-        generated_at: nowIso(),
-      }, null, 2),
-    }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            status: "ok",
+            ...report,
+            generated_at: nowIso(),
+          },
+          null,
+          2,
+        ),
+      },
+    ],
   };
 }
 
-function renderFactoryReprompt(template: string, values: Record<string, string>): string {
+function renderFactoryReprompt(
+  template: string,
+  values: Record<string, string>,
+): string {
   let output = template;
   for (const [key, value] of Object.entries(values)) {
     output = output.split(`{${key}}`).join(value);
@@ -5524,11 +7327,18 @@ function makeAutoloopReprompt(args: {
   const fallback = [
     `Autonomous follow-up round ${args.round}/${args.maxRounds}.`,
     `Objective: ${args.objective}`,
-    `Desired effect: ${args.desiredEffect ?? "Report explicit DONE when objective is fully complete."}`,
+    `Desired effect: ${
+      args.desiredEffect ??
+      "Report explicit DONE when objective is fully complete."
+    }`,
     `Current status: ${args.status}`,
     `Latest visible summary: ${args.latestSummary ?? "none"}`,
-    `Completion gate, min confidence: ${args.minConfidence !== null ? args.minConfidence.toFixed(2) : "disabled"}, citations required: ${args.requireCitations ? "yes" : "no"}.`,
-    `Last completion gate result: ${args.completionGateReason ?? "passed or not triggered"}.`,
+    `Completion gate, min confidence: ${
+      args.minConfidence !== null ? args.minConfidence.toFixed(2) : "disabled"
+    }, citations required: ${args.requireCitations ? "yes" : "no"}.`,
+    `Last completion gate result: ${
+      args.completionGateReason ?? "passed or not triggered"
+    }.`,
     "Continue execution now, then respond with either DONE and proof, or BLOCKED with exact missing dependency.",
   ].join("\n");
 
@@ -5541,7 +7351,8 @@ function makeAutoloopReprompt(args: {
     session_id: args.sessionId,
     status: args.status,
     latest_summary: args.latestSummary ?? "",
-    min_confidence: args.minConfidence !== null ? args.minConfidence.toFixed(2) : "",
+    min_confidence:
+      args.minConfidence !== null ? args.minConfidence.toFixed(2) : "",
     require_citations: args.requireCitations ? "true" : "false",
     completion_gate_reason: args.completionGateReason ?? "",
   });
@@ -5552,21 +7363,34 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
   if (!objective) throw new Error("objective is required");
 
   const requestedSessionIds = dedupeStrings(asStringArray(args.session_ids));
-  if (requestedSessionIds.length === 0) throw new Error("session_ids is required");
+  if (requestedSessionIds.length === 0)
+    throw new Error("session_ids is required");
   let trackedSessionIds = [...requestedSessionIds];
 
-  const desiredEffect = redactSecrets(asOptionalString(args.desired_effect) ?? "") || null;
+  const desiredEffect =
+    redactSecrets(asOptionalString(args.desired_effect) ?? "") || null;
   const repromptTemplate = asOptionalString(args.reprompt_template);
-  const maxRounds = Math.max(0, Math.min(12, asNonNegativeInt(args.max_rounds, 3)));
-  const pollDelayMs = Math.max(250, Math.min(10000, asNonNegativeInt(args.poll_delay_ms, 1500)));
-  const messageLimit = Math.max(1, Math.min(100, asNonNegativeInt(args.message_limit, 20)));
+  const maxRounds = Math.max(
+    0,
+    Math.min(12, asNonNegativeInt(args.max_rounds, 3)),
+  );
+  const pollDelayMs = Math.max(
+    250,
+    Math.min(10000, asNonNegativeInt(args.poll_delay_ms, 1500)),
+  );
+  const messageLimit = Math.max(
+    1,
+    Math.min(100, asNonNegativeInt(args.message_limit, 20)),
+  );
   const includeMessages = args.include_messages === true;
   const completionKeywords = asStringArray(args.completion_keywords);
   const minConfidence = normalizeConfidenceThreshold(args.min_confidence);
   const requireCitations = asBool(args.require_citations, false);
   const pushToPerplexityShadow = asBool(args.push_to_perplexity_shadow, true);
   const computerId = asOptionalString(args.computer_id) ?? undefined;
-  const correlationId = normalizeCorrelationId(asOptionalString(args.correlation_id) ?? undefined);
+  const correlationId = normalizeCorrelationId(
+    asOptionalString(args.correlation_id) ?? undefined,
+  );
 
   const roundReports: Array<Record<string, unknown>> = [];
   const rebindEvents: Array<Record<string, unknown>> = [];
@@ -5577,15 +7401,18 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
 
   async function resolveFallbackComputerId(): Promise<string | null> {
     if (computerId) return computerId;
-    if (discoveredComputerId !== null) return discoveredComputerId.length > 0 ? discoveredComputerId : null;
+    if (discoveredComputerId !== null)
+      return discoveredComputerId.length > 0 ? discoveredComputerId : null;
     try {
       const computers = await listComputers(25);
       const activeComputer = computers.find((computer) => {
-        const status = (asOptionalString(asRecord(computer).status) ?? "unknown").toLowerCase();
+        const status = (
+          asOptionalString(asRecord(computer).status) ?? "unknown"
+        ).toLowerCase();
         return status === "active";
       });
       discoveredComputerId = activeComputer
-        ? (asOptionalString(asRecord(activeComputer).id) ?? "")
+        ? asOptionalString(asRecord(activeComputer).id) ?? ""
         : "";
       return discoveredComputerId.length > 0 ? discoveredComputerId : null;
     } catch {
@@ -5613,7 +7440,9 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
     for (const session of pendingSessions) {
       const sourceSessionId = asOptionalString(session.session_id);
       if (!sourceSessionId) continue;
-      const sessionStatus = (asOptionalString(session.status) ?? "unknown").toLowerCase();
+      const sessionStatus = (
+        asOptionalString(session.status) ?? "unknown"
+      ).toLowerCase();
       if (sessionStatus === "running") {
         reprompts.push({
           session_id: sourceSessionId,
@@ -5634,7 +7463,8 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
         continue;
       }
 
-      let effectiveComputerId = computerId ?? parseSessionComputerId(session) ?? undefined;
+      let effectiveComputerId =
+        computerId ?? parseSessionComputerId(session) ?? undefined;
       if (!effectiveComputerId) {
         effectiveComputerId = (await resolveFallbackComputerId()) ?? undefined;
       }
@@ -5655,7 +7485,10 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
       repromptCursorBySession.set(sourceSessionId, cursor);
 
       try {
-        const result = await addSessionMessage(sourceSessionId, { text: prompt, computerId: effectiveComputerId });
+        const result = await addSessionMessage(sourceSessionId, {
+          text: prompt,
+          computerId: effectiveComputerId,
+        });
         reprompts.push({
           session_id: sourceSessionId,
           message_id: result.messageId,
@@ -5666,7 +7499,9 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
         repromptCursorBySession.set(sourceSessionId, cursor);
         totalReprompts += 1;
       } catch (error) {
-        const errorMessage = redactSecrets(error instanceof Error ? error.message : String(error));
+        const errorMessage = redactSecrets(
+          error instanceof Error ? error.message : String(error),
+        );
         if (!isConnectedComputerError(errorMessage)) {
           reprompts.push({
             session_id: sourceSessionId,
@@ -5697,10 +7532,17 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
               reasoningEffort: "high",
             },
           });
-          const reboundSessionId = resolveFactorySessionId(asRecord(reboundSession));
-          if (!reboundSessionId) throw new Error("Factory createSession returned no session id");
+          const reboundSessionId = resolveFactorySessionId(
+            asRecord(reboundSession),
+          );
+          if (!reboundSessionId)
+            throw new Error("Factory createSession returned no session id");
 
-          trackedSessionIds = replaceTrackedSessionId(trackedSessionIds, sourceSessionId, reboundSessionId);
+          trackedSessionIds = replaceTrackedSessionId(
+            trackedSessionIds,
+            sourceSessionId,
+            reboundSessionId,
+          );
           repromptCursorBySession.delete(sourceSessionId);
           rebindEvents.push({
             round,
@@ -5732,7 +7574,11 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
         } catch (rebindError) {
           reprompts.push({
             session_id: sourceSessionId,
-            error: `${errorMessage}; rebind_failed=${redactSecrets(rebindError instanceof Error ? rebindError.message : String(rebindError))}`,
+            error: `${errorMessage}; rebind_failed=${redactSecrets(
+              rebindError instanceof Error
+                ? rebindError.message
+                : String(rebindError),
+            )}`,
           });
         }
       }
@@ -5760,15 +7606,31 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
       completion_gate: inspection.completion_gate,
       sessions: compactSessionSummary,
       reprompts,
-      reprompts_sent: reprompts.filter((item) => "message_id" in item && !("skipped" in item) && !("warning" in item) && !("error" in item)).length,
+      reprompts_sent: reprompts.filter(
+        (item) =>
+          "message_id" in item &&
+          !("skipped" in item) &&
+          !("warning" in item) &&
+          !("error" in item),
+      ).length,
       tracked_session_ids: trackedSessionIds,
       generated_at: nowIso(),
     });
 
     if (pushToPerplexityShadow) {
       const findings = compactSessionSummary
-        .map((session) =>
-          `${session.session_id}: status=${session.status}, completed=${session.completed === true ? "yes" : "no"}, blocked=${session.blocked === true ? "yes" : "no"}, confidence=${formatConfidence(session.confidence_score)}, citations=${session.citation_urls.length}, gate=${session.completion_gate_passed === true ? "pass" : "fail"}, latest=${asOptionalString(session.latest_summary) ?? "none"}`)
+        .map(
+          (session) =>
+            `${session.session_id}: status=${session.status}, completed=${
+              session.completed === true ? "yes" : "no"
+            }, blocked=${
+              session.blocked === true ? "yes" : "no"
+            }, confidence=${formatConfidence(
+              session.confidence_score,
+            )}, citations=${session.citation_urls.length}, gate=${
+              session.completion_gate_passed === true ? "pass" : "fail"
+            }, latest=${asOptionalString(session.latest_summary) ?? "none"}`,
+        )
         .join(" | ");
       storeTypedMemoryRecord({
         category: "observation",
@@ -5821,8 +7683,12 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
     // Keep latest round snapshot when final refresh fails.
   }
 
-  const completedSessions = finalSessions.filter((session) => asRecord(session).completed === true).length;
-  const blockedSessions = finalSessions.filter((session) => asRecord(session).blocked === true).length;
+  const completedSessions = finalSessions.filter(
+    (session) => asRecord(session).completed === true,
+  ).length;
+  const blockedSessions = finalSessions.filter(
+    (session) => asRecord(session).blocked === true,
+  ).length;
   const pendingSessions = Math.max(0, finalSessions.length - completedSessions);
 
   const response = {
@@ -5895,23 +7761,27 @@ async function handleFactoryAutoloop(args: Record<string, unknown>) {
   });
 
   return {
-    content: [{
-      type: "text",
-      text: JSON.stringify(response, null, 2),
-    }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(response, null, 2),
+      },
+    ],
     isError: pendingSessions > 0,
   };
 }
 
 async function handleFactoryCreateMission(args: Record<string, unknown>) {
   const title = typeof args.title === "string" ? args.title : "";
-  const description = typeof args.description === "string" ? args.description : "";
+  const description =
+    typeof args.description === "string" ? args.description : "";
   if (!title) throw new Error("title is required");
   if (!description) throw new Error("description is required");
   const mission = await createMission({
     title,
     description,
-    repository: typeof args.repository === "string" ? args.repository : undefined,
+    repository:
+      typeof args.repository === "string" ? args.repository : undefined,
     branch: typeof args.branch === "string" ? args.branch : undefined,
   });
   storeTypedMemoryRecord({
@@ -5920,12 +7790,17 @@ async function handleFactoryCreateMission(args: Record<string, unknown>) {
     metadata: { mission_id: mission?.id },
     trace: { source: "factory_api", confidence: "high" },
   });
-  return { content: [{ type: "text", text: JSON.stringify(mission, null, 2) }] };
+  return {
+    content: [{ type: "text", text: JSON.stringify(mission, null, 2) }],
+  };
 }
 
 // ─── Business Status Report handler ────────────────────────────────
 
-async function handleBusinessStatusReport(args: { focus?: string; correlation_id?: string }) {
+async function handleBusinessStatusReport(args: {
+  focus?: string;
+  correlation_id?: string;
+}) {
   const focus = redactSecrets((args.focus ?? "").trim());
   const correlationId = normalizeCorrelationId(args.correlation_id);
 
@@ -5933,17 +7808,31 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
   const projects: Array<Record<string, unknown>> = [];
   const workflows: Array<Record<string, unknown>> = [];
   try {
-    const projStmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'project' ORDER BY created_at DESC LIMIT 10");
+    const projStmt = db.prepare(
+      "SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'project' ORDER BY created_at DESC LIMIT 10",
+    );
     while (projStmt.step()) {
       const row = projStmt.getAsObject() as Record<string, unknown>;
-      projects.push({ memory_id: row.id, content: row.content, metadata: parseMetadata(row.metadata), created_at: row.created_at });
+      projects.push({
+        memory_id: row.id,
+        content: row.content,
+        metadata: parseMetadata(row.metadata),
+        created_at: row.created_at,
+      });
     }
     projStmt.free();
 
-    const wfStmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'workflow' ORDER BY created_at DESC LIMIT 10");
+    const wfStmt = db.prepare(
+      "SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'workflow' ORDER BY created_at DESC LIMIT 10",
+    );
     while (wfStmt.step()) {
       const row = wfStmt.getAsObject() as Record<string, unknown>;
-      workflows.push({ memory_id: row.id, content: row.content, metadata: parseMetadata(row.metadata), created_at: row.created_at });
+      workflows.push({
+        memory_id: row.id,
+        content: row.content,
+        metadata: parseMetadata(row.metadata),
+        created_at: row.created_at,
+      });
     }
     wfStmt.free();
   } catch {
@@ -5953,10 +7842,17 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
   // Recall recent observations
   const recentObservations: Array<Record<string, unknown>> = [];
   try {
-    const obsStmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'observation' ORDER BY created_at DESC LIMIT 10");
+    const obsStmt = db.prepare(
+      "SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'observation' ORDER BY created_at DESC LIMIT 10",
+    );
     while (obsStmt.step()) {
       const row = obsStmt.getAsObject() as Record<string, unknown>;
-      recentObservations.push({ memory_id: row.id, content: row.content, metadata: parseMetadata(row.metadata), created_at: row.created_at });
+      recentObservations.push({
+        memory_id: row.id,
+        content: row.content,
+        metadata: parseMetadata(row.metadata),
+        created_at: row.created_at,
+      });
     }
     obsStmt.free();
   } catch {
@@ -5966,10 +7862,17 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
   // Recall pending approvals
   const pendingApprovals: Array<Record<string, unknown>> = [];
   try {
-    const appStmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'approval_request' ORDER BY created_at DESC LIMIT 10");
+    const appStmt = db.prepare(
+      "SELECT id, category, content, metadata, created_at FROM memories WHERE category = 'approval_request' ORDER BY created_at DESC LIMIT 10",
+    );
     while (appStmt.step()) {
       const row = appStmt.getAsObject() as Record<string, unknown>;
-      pendingApprovals.push({ memory_id: row.id, content: row.content, metadata: parseMetadata(row.metadata), created_at: row.created_at });
+      pendingApprovals.push({
+        memory_id: row.id,
+        content: row.content,
+        metadata: parseMetadata(row.metadata),
+        created_at: row.created_at,
+      });
     }
     appStmt.free();
   } catch {
@@ -5984,7 +7887,8 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
         : "No active focus",
     observed_signals: recentObservations.map((obs) => ({
       memory_id: obs.memory_id,
-      source: asOptionalString(asRecord(obs.metadata).source) ?? "hermes_memory",
+      source:
+        asOptionalString(asRecord(obs.metadata).source) ?? "hermes_memory",
       summary: asOptionalString(obs.content) ?? "observation recorded",
       timestamp: obs.created_at,
     })),
@@ -5997,10 +7901,12 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
       memory_id: w.memory_id,
       summary: asOptionalString(w.content) ?? "active workflow",
     })),
-    pending_approvals: pendingApprovals.length + fleetLifecycleState.pendingApprovals,
+    pending_approvals:
+      pendingApprovals.length + fleetLifecycleState.pendingApprovals,
     approval_details: pendingApprovals.map((a) => ({
       memory_id: a.memory_id,
-      risk_level: asOptionalString(asRecord(a.metadata).risk_level) ?? "unknown",
+      risk_level:
+        asOptionalString(asRecord(a.metadata).risk_level) ?? "unknown",
       summary: asOptionalString(a.content) ?? "approval pending",
     })),
     blocked_capabilities: currentBlockedCapabilities(),
@@ -6022,53 +7928,86 @@ async function handleBusinessStatusReport(args: { focus?: string; correlation_id
           });
         }
         perpStmt.free();
-      } catch { /* best-effort */ }
+      } catch {
+        /* best-effort */
+      }
       return {
         observation_count: perpRecords.length,
         recent_queries: perpRecords,
-        summary: perpRecords.length > 0
-          ? `${perpRecords.length} recent Perplexity shadow observation(s) available.`
-          : "No Perplexity shadow observations. Use perplexity_ingest to push research context.",
+        summary:
+          perpRecords.length > 0
+            ? `${perpRecords.length} recent Perplexity shadow observation(s) available.`
+            : "No Perplexity shadow observations. Use perplexity_ingest to push research context.",
       };
     })(),
     risks: pendingApprovals.map((a) => ({
-      risk_level: asOptionalString(asRecord(a.metadata).risk_level) ?? "unknown",
+      risk_level:
+        asOptionalString(asRecord(a.metadata).risk_level) ?? "unknown",
       description: asOptionalString(a.content) ?? "risk identified",
     })),
     next_steps: [
-      { step: "Review pending approvals", priority: "high", status: pendingApprovals.length > 0 ? "ready" : "none" },
-      { step: "Address blocked capabilities", priority: "high", status: currentBlockedCapabilities().length > 0 ? "blocked" : "none" },
-      { step: "Continue active project progress", priority: "medium", status: projects.length > 0 ? "ready" : "none" },
-      { step: "Refine workflow patterns", priority: "medium", status: workflows.length > 0 ? "ready" : "none" },
+      {
+        step: "Review pending approvals",
+        priority: "high",
+        status: pendingApprovals.length > 0 ? "ready" : "none",
+      },
+      {
+        step: "Address blocked capabilities",
+        priority: "high",
+        status: currentBlockedCapabilities().length > 0 ? "blocked" : "none",
+      },
+      {
+        step: "Continue active project progress",
+        priority: "medium",
+        status: projects.length > 0 ? "ready" : "none",
+      },
+      {
+        step: "Refine workflow patterns",
+        priority: "medium",
+        status: workflows.length > 0 ? "ready" : "none",
+      },
     ],
     kpi_counters: {
-      pending_approvals: pendingApprovals.length + fleetLifecycleState.pendingApprovals,
+      pending_approvals:
+        pendingApprovals.length + fleetLifecycleState.pendingApprovals,
       blocked_capabilities: currentBlockedCapabilities().length,
       active_projects: projects.length,
       active_workflows: workflows.length,
       observed_signals: recentObservations.length,
       pending_fleet_retries: fleetLifecycleState.pendingRetries.length,
-      pending_knowledge_retries: fleetLifecycleState.pendingKnowledgeRetries.length,
+      pending_knowledge_retries:
+        fleetLifecycleState.pendingKnowledgeRetries.length,
     },
     correlation_id: correlationId,
     generated_at: nowIso(),
     heartbeat: buildHeartbeatStatus("reporting", focus || "status_report"),
   };
 
-  return { content: [{ type: "text", text: JSON.stringify(redactMetadata(statusReport), null, 2) }] };
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(redactMetadata(statusReport), null, 2),
+      },
+    ],
+  };
 }
 
 // ─── Autonomous loop (Hermes drives itself) ────────────────────────
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434";
-const AUTONOMOUS_INTERVAL_MS = parseInt(process.env.HERMES_AUTONOMOUS_INTERVAL ?? "300000", 10);
+const AUTONOMOUS_INTERVAL_MS = parseInt(
+  process.env.HERMES_AUTONOMOUS_INTERVAL ?? "300000",
+  10,
+);
 
-const WORKFILE_ROOTS = [
-  "/workspace",
-  "/app/workfiles",
-];
+const WORKFILE_ROOTS = ["/workspace", "/app/workfiles"];
 
-async function ollamaChat(systemPrompt: string, userPrompt: string, model: string = "gemma3:4b"): Promise<string | null> {
+async function ollamaChat(
+  systemPrompt: string,
+  userPrompt: string,
+  model: string = "gemma3:4b",
+): Promise<string | null> {
   try {
     const resp = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: "POST",
@@ -6084,7 +8023,7 @@ async function ollamaChat(systemPrompt: string, userPrompt: string, model: strin
       }),
     });
     if (!resp.ok) return null;
-    const body = await resp.json() as any;
+    const body = (await resp.json()) as any;
     return body?.message?.content ?? null;
   } catch {
     return null;
@@ -6104,7 +8043,9 @@ async function scanWorkfiles(): Promise<string[]> {
           found.push(join(root, entry.name));
         }
       }
-    } catch { /* skip inaccessible directories */ }
+    } catch {
+      /* skip inaccessible directories */
+    }
   }
   return found;
 }
@@ -6121,7 +8062,9 @@ async function syncCrossMachineMemory(): Promise<void> {
     if (!sessions.length) return;
 
     // Query already-processed session IDs from Hermes memory
-    const stmt = db.prepare("SELECT content FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT 100");
+    const stmt = db.prepare(
+      "SELECT content FROM memories WHERE category = ? AND content LIKE ? ORDER BY created_at DESC LIMIT 100",
+    );
     stmt.bind([CROSS_MEMORY_CATEGORY, `${CROSS_MEMORY_PREFIX}%`]);
     const processedIds = new Set<string>();
     while (stmt.step()) {
@@ -6143,10 +8086,23 @@ async function syncCrossMachineMemory(): Promise<void> {
         if (!msgs.length) continue;
 
         // Extract key info from messages
-        const userMsgs = msgs.filter(m => m.role === "user").map(m => String(m.content ?? "").trim()).filter(Boolean);
-        const assistantMsgs = msgs.filter(m => m.role === "assistant").map(m => String(m.content ?? "").slice(0, 500)).filter(Boolean);
-        const fileMentions = [...assistantMsgs.join(" ").matchAll(/[A-Z]:\\[^\s"']+|\/[^\s"']+/g)].map(m => m[0]).slice(0, 10);
-        const taskSummary = userMsgs.slice(0, 3).map(m => m.length > 200 ? m.slice(0, 200) + "..." : m).join(" | ");
+        const userMsgs = msgs
+          .filter((m) => m.role === "user")
+          .map((m) => String(m.content ?? "").trim())
+          .filter(Boolean);
+        const assistantMsgs = msgs
+          .filter((m) => m.role === "assistant")
+          .map((m) => String(m.content ?? "").slice(0, 500))
+          .filter(Boolean);
+        const fileMentions = [
+          ...assistantMsgs.join(" ").matchAll(/[A-Z]:\\[^\s"']+|\/[^\s"']+/g),
+        ]
+          .map((m) => m[0])
+          .slice(0, 10);
+        const taskSummary = userMsgs
+          .slice(0, 3)
+          .map((m) => (m.length > 200 ? m.slice(0, 200) + "..." : m))
+          .join(" | ");
 
         let summary: string;
         try {
@@ -6161,7 +8117,9 @@ async function syncCrossMachineMemory(): Promise<void> {
 
         storeTypedMemoryRecord({
           category: CROSS_MEMORY_CATEGORY,
-          content: `${CROSS_MEMORY_PREFIX}${sid} | device: ${session.computerId ?? "unknown"} | ${summary}`,
+          content: `${CROSS_MEMORY_PREFIX}${sid} | device: ${
+            session.computerId ?? "unknown"
+          } | ${summary}`,
           metadata: {
             sessionId: sid,
             computerId: session.computerId,
@@ -6169,7 +8127,11 @@ async function syncCrossMachineMemory(): Promise<void> {
             fileMentions,
             timestamp: nowIso(),
           },
-          trace: { source: "cross_machine_memory", correlationId: `mem-${sid}`, timestamp: nowIso() },
+          trace: {
+            source: "cross_machine_memory",
+            correlationId: `mem-${sid}`,
+            timestamp: nowIso(),
+          },
         });
 
         newCount++;
@@ -6210,18 +8172,32 @@ async function autonomousTick(): Promise<void> {
         storeTypedMemoryRecord({
           category: "observation",
           content: `Autonomous handoff for ${wf}: ${parsed.status}, ${parsed.field_count} fields`,
-          metadata: { source: "autonomous_loop", correlation_id: correlationId, ...parsed },
-          trace: { source: "autonomous_loop", correlationId, timestamp: nowIso() },
+          metadata: {
+            source: "autonomous_loop",
+            correlation_id: correlationId,
+            ...parsed,
+          },
+          trace: {
+            source: "autonomous_loop",
+            correlationId,
+            timestamp: nowIso(),
+          },
         });
       }
     }
   } catch (err) {
-    console.error(`[autonomous] tick error: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(
+      `[autonomous] tick error: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }
 
 function startAutonomousLoop(): void {
-  console.error(`[autonomous] Starting loop (interval: ${AUTONOMOUS_INTERVAL_MS}ms, ollama: ${OLLAMA_HOST})`);
+  console.error(
+    `[autonomous] Starting loop (interval: ${AUTONOMOUS_INTERVAL_MS}ms, ollama: ${OLLAMA_HOST})`,
+  );
   autonomousTick();
   setInterval(autonomousTick, AUTONOMOUS_INTERVAL_MS);
 }
@@ -6235,15 +8211,37 @@ async function handleSfrepContextTransport(args: {
 }): Promise<ToolResult> {
   const workfilePath = args.workfile_path;
   if (!workfilePath) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: "workfile_path is required" }) }], isError: true };
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ error: "workfile_path is required" }),
+        },
+      ],
+      isError: true,
+    };
   }
 
   const factsPath = join(workfilePath, "extracted", "facts.json");
-  const engagementPath = join(workfilePath, "extracted", "engagement_facts.json");
+  const engagementPath = join(
+    workfilePath,
+    "extracted",
+    "engagement_facts.json",
+  );
   const sfrepDir = join(workfilePath, "sfrep");
 
   if (!existsSync(factsPath)) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: `facts.json not found at ${factsPath}` }) }], isError: true };
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: `facts.json not found at ${factsPath}`,
+          }),
+        },
+      ],
+      isError: true,
+    };
   }
 
   let facts: any[] = [];
@@ -6254,18 +8252,50 @@ async function handleSfrepContextTransport(args: {
       engagementFacts = JSON.parse(readFileSync(engagementPath, "utf8"));
     }
   } catch (err) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: `Failed to read facts: ${err instanceof Error ? err.message : String(err)}` }) }], isError: true };
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: `Failed to read facts: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          }),
+        },
+      ],
+      isError: true,
+    };
   }
 
   const groundedFacts = [...facts, ...engagementFacts].filter(
-    (f: any) => f?.status === "grounded" && f?.value != null
+    (f: any) => f?.status === "grounded" && f?.value != null,
   );
 
   if (groundedFacts.length === 0) {
     const payload: Record<string, unknown> = {};
     if (!existsSync(sfrepDir)) mkdirSync(sfrepDir, { recursive: true });
-    writeFileSync(join(sfrepDir, "payload.json"), JSON.stringify(payload, null, 2) + "\n", "utf8");
-    return { content: [{ type: "text", text: JSON.stringify({ payload: {}, mapping_plan: "No grounded facts to transport", blocked: true, reason: "empty_payload" }, null, 2) }] };
+    writeFileSync(
+      join(sfrepDir, "payload.json"),
+      JSON.stringify(payload, null, 2) + "\n",
+      "utf8",
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              payload: {},
+              mapping_plan: "No grounded facts to transport",
+              blocked: true,
+              reason: "empty_payload",
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
   }
 
   const groqKey = process.env.GROQ_API_KEY ?? "";
@@ -6322,41 +8352,69 @@ Return ONLY a JSON object with this structure:
   "warnings": ["any concerns about data quality or conflicts"]
 }`;
 
-  const userPrompt = `Map these grounded facts to SFREP field IDs:\n${JSON.stringify(factsSummary, null, 2)}`;
+  const userPrompt = `Map these grounded facts to SFREP field IDs:\n${JSON.stringify(
+    factsSummary,
+    null,
+    2,
+  )}`;
 
-  let aiResult: { payload: Record<string, unknown>; mapping_plan: string; unmapped_keys: string[]; warnings: string[] };
+  let aiResult: {
+    payload: Record<string, unknown>;
+    mapping_plan: string;
+    unmapped_keys: string[];
+    warnings: string[];
+  };
 
   if (groqKey) {
     try {
-      const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${groqKey}`,
-          "Content-Type": "application/json",
+      const resp = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${groqKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            temperature: 0.0,
+            max_tokens: 2048,
+          }),
         },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          temperature: 0.0,
-          max_tokens: 2048,
-        }),
-      });
+      );
 
       if (!resp.ok) {
         const errText = await resp.text();
-        throw new Error(`Groq API error ${resp.status}: ${errText.slice(0, 200)}`);
+        throw new Error(
+          `Groq API error ${resp.status}: ${errText.slice(0, 200)}`,
+        );
       }
 
-      const body = await resp.json() as any;
+      const body = (await resp.json()) as any;
       let content = body?.choices?.[0]?.message?.content ?? "";
-      content = content.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+      content = content
+        .replace(/```json\s*/g, "")
+        .replace(/```\s*/g, "")
+        .trim();
       aiResult = JSON.parse(content);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      return { content: [{ type: "text", text: JSON.stringify({ error: `AI mapping failed: ${errMsg}`, fallback: "Use deterministic mapping instead" }) }], isError: true };
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: `AI mapping failed: ${errMsg}`,
+              fallback: "Use deterministic mapping instead",
+            }),
+          },
+        ],
+        isError: true,
+      };
     }
   } else {
     const mapping = sfrepFieldCatalog;
@@ -6379,16 +8437,31 @@ Return ONLY a JSON object with this structure:
   }
 
   if (!existsSync(sfrepDir)) mkdirSync(sfrepDir, { recursive: true });
-  writeFileSync(join(sfrepDir, "payload.json"), JSON.stringify(aiResult.payload, null, 2) + "\n", "utf8");
+  writeFileSync(
+    join(sfrepDir, "payload.json"),
+    JSON.stringify(aiResult.payload, null, 2) + "\n",
+    "utf8",
+  );
 
-  return { content: [{ type: "text", text: JSON.stringify({
-    payload_path: join(sfrepDir, "payload.json"),
-    field_count: Object.keys(aiResult.payload).length,
-    mapping_plan: aiResult.mapping_plan,
-    unmapped_keys: aiResult.unmapped_keys,
-    warnings: aiResult.warnings,
-    ready_for_sfrep_apply: Object.keys(aiResult.payload).length > 0,
-  }, null, 2) }] };
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            payload_path: join(sfrepDir, "payload.json"),
+            field_count: Object.keys(aiResult.payload).length,
+            mapping_plan: aiResult.mapping_plan,
+            unmapped_keys: aiResult.unmapped_keys,
+            warnings: aiResult.warnings,
+            ready_for_sfrep_apply: Object.keys(aiResult.payload).length > 0,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
 }
 
 // ─── SFREP autonomous handoff (iterative, self-verifying) ─────────
@@ -6405,22 +8478,46 @@ async function handleSfrepAutonomousHandoff(args: {
   const verifyReadback = args.verify_readback !== false;
 
   if (!workfilePath) {
-    return { content: [{ type: "text", text: JSON.stringify({ error: "workfile_path is required" }) }], isError: true };
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ error: "workfile_path is required" }),
+        },
+      ],
+      isError: true,
+    };
   }
 
   const diagnostics: string[] = [];
   const attemptLog: Record<string, unknown>[] = [];
 
   const factsPath = join(workfilePath, "extracted", "facts.json");
-  const engagementPath = join(workfilePath, "extracted", "engagement_facts.json");
+  const engagementPath = join(
+    workfilePath,
+    "extracted",
+    "engagement_facts.json",
+  );
 
   if (!existsSync(factsPath)) {
-    return { content: [{ type: "text", text: JSON.stringify({
-      status: "blocked",
-      reason: "facts.json not found",
-      workfile_path: workfilePath,
-      diagnostics: [`Missing: ${factsPath}`],
-    }, null, 2) }], isError: true };
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "blocked",
+              reason: "facts.json not found",
+              workfile_path: workfilePath,
+              diagnostics: [`Missing: ${factsPath}`],
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+      isError: true,
+    };
   }
 
   let facts: any[] = [];
@@ -6432,36 +8529,77 @@ async function handleSfrepAutonomousHandoff(args: {
       diagnostics.push(`Loaded ${engagementFacts.length} engagement facts`);
     }
   } catch (err) {
-    return { content: [{ type: "text", text: JSON.stringify({
-      status: "blocked",
-      reason: `Failed to parse facts: ${err instanceof Error ? err.message : String(err)}`,
-    }, null, 2) }], isError: true };
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "blocked",
+              reason: `Failed to parse facts: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+      isError: true,
+    };
   }
 
   const allFacts = [...facts, ...engagementFacts];
-  const groundedCount = allFacts.filter((f: any) => f?.status === "grounded" && f?.value != null).length;
-  const conflictCount = allFacts.filter((f: any) => f?.status === "conflict").length;
-  const missingCount = allFacts.filter((f: any) => f?.status === "missing").length;
+  const groundedCount = allFacts.filter(
+    (f: any) => f?.status === "grounded" && f?.value != null,
+  ).length;
+  const conflictCount = allFacts.filter(
+    (f: any) => f?.status === "conflict",
+  ).length;
+  const missingCount = allFacts.filter(
+    (f: any) => f?.status === "missing",
+  ).length;
 
-  diagnostics.push(`Total facts: ${allFacts.length} (${groundedCount} grounded, ${conflictCount} conflict, ${missingCount} missing)`);
+  diagnostics.push(
+    `Total facts: ${allFacts.length} (${groundedCount} grounded, ${conflictCount} conflict, ${missingCount} missing)`,
+  );
 
   if (conflictCount > 0) {
     const conflicts = allFacts.filter((f: any) => f?.status === "conflict");
-    diagnostics.push(`Conflicts detected on keys: ${conflicts.map((f: any) => f.canonical_key).join(", ")}. These will be excluded from payload.`);
+    diagnostics.push(
+      `Conflicts detected on keys: ${conflicts
+        .map((f: any) => f.canonical_key)
+        .join(", ")}. These will be excluded from payload.`,
+    );
   }
 
   if (groundedCount === 0) {
     const sfrepDir = join(workfilePath, "sfrep");
     if (!existsSync(sfrepDir)) mkdirSync(sfrepDir, { recursive: true });
     const emptyPayload: Record<string, unknown> = {};
-    writeFileSync(join(sfrepDir, "payload.json"), JSON.stringify(emptyPayload, null, 2) + "\n", "utf8");
-    return { content: [{ type: "text", text: JSON.stringify({
-      status: "blocked",
-      reason: "empty_payload",
-      field_count: 0,
-      diagnostics,
-      attempt_count: 0,
-    }, null, 2) }] };
+    writeFileSync(
+      join(sfrepDir, "payload.json"),
+      JSON.stringify(emptyPayload, null, 2) + "\n",
+      "utf8",
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "blocked",
+              reason: "empty_payload",
+              field_count: 0,
+              diagnostics,
+              attempt_count: 0,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
   }
 
   const sfrepFieldCatalog: Record<string, string> = {
@@ -6498,7 +8636,9 @@ async function handleSfrepAutonomousHandoff(args: {
     attemptLog.push({ attempt, started_at: new Date().toISOString() });
 
     const groqKey = process.env.GROQ_API_KEY ?? "";
-    const groundedFacts = allFacts.filter((f: any) => f?.status === "grounded" && f?.value != null);
+    const groundedFacts = allFacts.filter(
+      (f: any) => f?.status === "grounded" && f?.value != null,
+    );
     const factsSummary = groundedFacts.map((f: any) => ({
       canonical_key: f.canonical_key,
       value: f.value,
@@ -6510,7 +8650,11 @@ Catalog: ${JSON.stringify(sfrepFieldCatalog)}
 Rules: Only include mappable keys. Use exact values. Booleans as true/false. Skip nulls.
 Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "warnings":[...]}`;
 
-    const userPrompt = `Attempt ${attempt}/${maxAttempts}. Map:\n${JSON.stringify(factsSummary)}\n${attempt > 1 ? `\nPrevious warnings: ${JSON.stringify(bestWarnings)}` : ""}`;
+    const userPrompt = `Attempt ${attempt}/${maxAttempts}. Map:\n${JSON.stringify(
+      factsSummary,
+    )}\n${
+      attempt > 1 ? `\nPrevious warnings: ${JSON.stringify(bestWarnings)}` : ""
+    }`;
 
     // Try Ollama first (local, free), then Groq, then deterministic
     let aiContent: string | null = null;
@@ -6518,37 +8662,68 @@ Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "war
 
     aiContent = await ollamaChat(systemPrompt, userPrompt, ollamaModel);
     if (aiContent) {
-      diagnostics.push(`Attempt ${attempt}: Ollama/${ollamaModel} response received`);
+      diagnostics.push(
+        `Attempt ${attempt}: Ollama/${ollamaModel} response received`,
+      );
     } else {
       const groqKey = process.env.GROQ_API_KEY ?? "";
       if (groqKey) {
         try {
           const model = args.groq_model ?? "gemma2-9b-it";
-          const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ model, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: 0.0, max_tokens: 2048 }),
-          });
+          const resp = await fetch(
+            "https://api.groq.com/openai/v1/chat/completions",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${groqKey}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                model,
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: userPrompt },
+                ],
+                temperature: 0.0,
+                max_tokens: 2048,
+              }),
+            },
+          );
           if (resp.ok) {
-            const body = await resp.json() as any;
+            const body = (await resp.json()) as any;
             aiContent = body?.choices?.[0]?.message?.content ?? null;
-            if (aiContent) diagnostics.push(`Attempt ${attempt}: Groq/${model} response received`);
+            if (aiContent)
+              diagnostics.push(
+                `Attempt ${attempt}: Groq/${model} response received`,
+              );
           }
-        } catch { /* fall through */ }
+        } catch {
+          /* fall through */
+        }
       }
     }
 
     if (aiContent) {
       try {
-        let content = aiContent.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        let content = aiContent
+          .replace(/```json\s*/g, "")
+          .replace(/```\s*/g, "")
+          .trim();
         const aiPayload = JSON.parse(content);
         bestPayload = aiPayload.payload ?? {};
         bestPlan = aiPayload.mapping_plan ?? "AI mapping";
         bestWarnings = aiPayload.warnings ?? [];
-        diagnostics.push(`Attempt ${attempt}: ${Object.keys(bestPayload).length} fields`);
-        if (bestWarnings.length > 0) diagnostics.push(`Warnings: ${bestWarnings.join("; ")}`);
+        diagnostics.push(
+          `Attempt ${attempt}: ${Object.keys(bestPayload).length} fields`,
+        );
+        if (bestWarnings.length > 0)
+          diagnostics.push(`Warnings: ${bestWarnings.join("; ")}`);
       } catch (err) {
-        diagnostics.push(`Attempt ${attempt}: AI parse failed: ${err instanceof Error ? err.message : String(err)}`);
+        diagnostics.push(
+          `Attempt ${attempt}: AI parse failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
         const payload: Record<string, unknown> = {};
         for (const f of groundedFacts) {
           const sfrepField = sfrepFieldCatalog[f.canonical_key as string];
@@ -6563,7 +8738,9 @@ Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "war
       // No AI response available (both Ollama and Groq unreachable or missing keys).
       // Fall back to deterministic catalog mapping immediately — do not waste
       // retry iterations on an empty AI path that can never produce content.
-      diagnostics.push(`Attempt ${attempt}: no AI response available, using deterministic fallback`);
+      diagnostics.push(
+        `Attempt ${attempt}: no AI response available, using deterministic fallback`,
+      );
       const payload: Record<string, unknown> = {};
       for (const f of groundedFacts) {
         const sfrepField = sfrepFieldCatalog[f.canonical_key as string];
@@ -6587,35 +8764,57 @@ Return JSON: {"payload":{...}, "mapping_plan":"...", "unmapped_keys":[...], "war
   // --- Finalize ---
   const sfrepDir = join(workfilePath, "sfrep");
   if (!existsSync(sfrepDir)) mkdirSync(sfrepDir, { recursive: true });
-  writeFileSync(join(sfrepDir, "payload.json"), JSON.stringify(bestPayload, null, 2) + "\n", "utf8");
+  writeFileSync(
+    join(sfrepDir, "payload.json"),
+    JSON.stringify(bestPayload, null, 2) + "\n",
+    "utf8",
+  );
 
   return {
-    content: [{
-      type: "text", text: JSON.stringify({
-        status: "ready",
-        payload_path: join(sfrepDir, "payload.json"),
-        field_count: Object.keys(bestPayload).length,
-        mapping_plan: bestPlan,
-        warnings: bestWarnings,
-        diagnostics,
-        attempt_count: attemptLog.length,
-        ready_for_sfrep_apply: Object.keys(bestPayload).length > 0,
-      }, null, 2),
-    }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            status: "ready",
+            payload_path: join(sfrepDir, "payload.json"),
+            field_count: Object.keys(bestPayload).length,
+            mapping_plan: bestPlan,
+            warnings: bestWarnings,
+            diagnostics,
+            attempt_count: attemptLog.length,
+            ready_for_sfrep_apply: Object.keys(bestPayload).length > 0,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
   };
 }
 
 // ─── Dispatch: policy gate + secret redaction + audit ──────────────
 
-type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
+type ToolResult = {
+  content: { type: string; text: string }[];
+  isError?: boolean;
+};
 
 const HANDLERS: Record<string, (a: any) => Promise<ToolResult>> = {
-  research: handleResearch, vps_info: handleVpsInfo, vps_metrics: handleVpsMetrics,
-  vps_projects: handleVpsProjects, vps_project_logs: handleVpsProjectLogs,
-  vps_restart_project: handleVpsRestartProject, vps_stop_project: handleVpsStopProject,
-  vps_start_project: handleVpsStartProject, vps_deploy: handleVpsDeploy,
-  vps_snapshot: handleVpsSnapshot, vps_restart: handleVpsRestart,
-  memory_store: handleMemoryStore, memory_recall: handleMemoryRecall, plan: handlePlan,
+  research: handleResearch,
+  vps_info: handleVpsInfo,
+  vps_metrics: handleVpsMetrics,
+  vps_projects: handleVpsProjects,
+  vps_project_logs: handleVpsProjectLogs,
+  vps_restart_project: handleVpsRestartProject,
+  vps_stop_project: handleVpsStopProject,
+  vps_start_project: handleVpsStartProject,
+  vps_deploy: handleVpsDeploy,
+  vps_snapshot: handleVpsSnapshot,
+  vps_restart: handleVpsRestart,
+  memory_store: handleMemoryStore,
+  memory_recall: handleMemoryRecall,
+  plan: handlePlan,
   business_management_cycle: handleBusinessManagementCycle,
   fleet_get_run_details: handleFleetGetRunDetails,
   business_pm_loop: handleBusinessPmLoop,
@@ -6635,17 +8834,29 @@ function redactResult(result: ToolResult): ToolResult {
   return {
     ...result,
     content: result.content.map((c) =>
-      c.type === "text" ? { ...c, text: redactSecrets(c.text) } : c),
+      c.type === "text" ? { ...c, text: redactSecrets(c.text) } : c,
+    ),
   };
 }
 
-function recordMutationAudit(name: string, args: Record<string, unknown>, level: string) {
+function recordMutationAudit(
+  name: string,
+  args: Record<string, unknown>,
+  level: string,
+) {
   try {
     const approval = args.approval;
-    const approver = approval && typeof approval === "object"
-      ? ((approval as Record<string, unknown>).approved_by ?? (approval as Record<string, unknown>).approver ?? "provided")
-      : (typeof approval === "string" ? "provided" : "none");
-    const evidence = args.validation_evidence as Record<string, unknown> | undefined;
+    const approver =
+      approval && typeof approval === "object"
+        ? (approval as Record<string, unknown>).approved_by ??
+          (approval as Record<string, unknown>).approver ??
+          "provided"
+        : typeof approval === "string"
+          ? "provided"
+          : "none";
+    const evidence = args.validation_evidence as
+      | Record<string, unknown>
+      | undefined;
     const meta = {
       tool: name,
       risk_level: level,
@@ -6671,24 +8882,41 @@ function recordMutationAudit(name: string, args: Record<string, unknown>, level:
   }
 }
 
-async function dispatchTool(name: string, rawArgs: unknown): Promise<ToolResult> {
+async function dispatchTool(
+  name: string,
+  rawArgs: unknown,
+): Promise<ToolResult> {
   const args: Record<string, unknown> =
-    rawArgs && typeof rawArgs === "object" ? (rawArgs as Record<string, unknown>) : {};
-  const policy = evaluateToolPolicy(name, args, { buildCommit: BUILD_INFO.commit });
+    rawArgs && typeof rawArgs === "object"
+      ? (rawArgs as Record<string, unknown>)
+      : {};
+  const policy = evaluateToolPolicy(name, args, {
+    buildCommit: BUILD_INFO.commit,
+  });
   if (!policy.allowed && policy.denial) {
-    return { content: [{ type: "text", text: JSON.stringify(policy.denial, null, 2) }], isError: true };
+    return {
+      content: [{ type: "text", text: JSON.stringify(policy.denial, null, 2) }],
+      isError: true,
+    };
   }
   const handler = HANDLERS[name];
   if (!handler) {
-    return { content: [{ type: "text", text: `Error: Unknown tool: ${name}` }], isError: true };
+    return {
+      content: [{ type: "text", text: `Error: Unknown tool: ${name}` }],
+      isError: true,
+    };
   }
-  if (RISK_METADATA[name]?.mutating) recordMutationAudit(name, args, policy.effective_level);
+  if (RISK_METADATA[name]?.mutating)
+    recordMutationAudit(name, args, policy.effective_level);
   try {
     const result = await handler(args);
     return redactResult(result);
   } catch (err) {
     const msg = redactSecrets(err instanceof Error ? err.message : String(err));
-    return { content: [{ type: "text", text: `Error: ${msg}` }], isError: true };
+    return {
+      content: [{ type: "text", text: `Error: ${msg}` }],
+      isError: true,
+    };
   }
 }
 
@@ -6696,7 +8924,9 @@ async function dispatchTool(name: string, rawArgs: unknown): Promise<ToolResult>
 
 async function handleTelegramStatus(): Promise<string> {
   try {
-    const report = await handleBusinessStatusReport({ correlation_id: `telegram-status-${Date.now()}` });
+    const report = await handleBusinessStatusReport({
+      correlation_id: `telegram-status-${Date.now()}`,
+    });
     const data = typeof report === "string" ? JSON.parse(report) : report;
     const body = data?.content?.[0]?.text
       ? JSON.parse(data.content[0].text)
@@ -6709,9 +8939,15 @@ async function handleTelegramStatus(): Promise<string> {
     if (body.status_report) {
       const sr = body.status_report;
       if (sr.current_focus) lines.push(`🎯 *Focus:* ${sr.current_focus}`);
-      if (typeof sr.pending_approvals === "number") lines.push(`⏳ *Pending Approvals:* ${sr.pending_approvals}`);
-      if (Array.isArray(sr.blocked_capabilities) && sr.blocked_capabilities.length > 0) {
-        lines.push(`🚫 *Blocked Capabilities:* ${sr.blocked_capabilities.join(", ")}`);
+      if (typeof sr.pending_approvals === "number")
+        lines.push(`⏳ *Pending Approvals:* ${sr.pending_approvals}`);
+      if (
+        Array.isArray(sr.blocked_capabilities) &&
+        sr.blocked_capabilities.length > 0
+      ) {
+        lines.push(
+          `🚫 *Blocked Capabilities:* ${sr.blocked_capabilities.join(", ")}`,
+        );
       } else {
         lines.push("🚫 *Blocked Capabilities:* none");
       }
@@ -6730,13 +8966,24 @@ async function handleTelegramStatus(): Promise<string> {
       if (Array.isArray(sr.next_steps) && sr.next_steps.length > 0) {
         lines.push(`📋 *Next Steps:* ${sr.next_steps.slice(0, 5).join("; ")}`);
       }
-      if (sr.perplexity_awareness && typeof sr.perplexity_awareness.summary === "string") {
+      if (
+        sr.perplexity_awareness &&
+        typeof sr.perplexity_awareness.summary === "string"
+      ) {
         lines.push(`🔍 *Perplexity:* ${sr.perplexity_awareness.summary}`);
       }
     } else if (body.focus || body.current_focus) {
       lines.push(`🎯 *Focus:* ${body.focus || body.current_focus}`);
-      if (body.pending_approvals != null) lines.push(`⏳ *Pending Approvals:* ${body.pending_approvals}`);
-      if (body.blocked_capabilities) lines.push(`🚫 *Blocked Capabilities:* ${Array.isArray(body.blocked_capabilities) ? body.blocked_capabilities.join(", ") : body.blocked_capabilities}`);
+      if (body.pending_approvals != null)
+        lines.push(`⏳ *Pending Approvals:* ${body.pending_approvals}`);
+      if (body.blocked_capabilities)
+        lines.push(
+          `🚫 *Blocked Capabilities:* ${
+            Array.isArray(body.blocked_capabilities)
+              ? body.blocked_capabilities.join(", ")
+              : body.blocked_capabilities
+          }`,
+        );
     } else {
       lines.push(JSON.stringify(body, null, 2).slice(0, 3000));
     }
@@ -6753,7 +9000,15 @@ async function handleTelegramCycle(): Promise<string> {
     const result = await handleBusinessPmLoop({
       objective: "Telegram-triggered business review cycle",
       correlation_id: `telegram-cycle-${Date.now()}`,
-      recall_categories: ["decision", "workflow", "fact", "project", "observation", "learning", "capability_gap"],
+      recall_categories: [
+        "decision",
+        "workflow",
+        "fact",
+        "project",
+        "observation",
+        "learning",
+        "capability_gap",
+      ],
       recall_limit: 15,
     });
     const data = typeof result === "string" ? JSON.parse(result) : result;
@@ -6768,34 +9023,51 @@ async function handleTelegramCycle(): Promise<string> {
     if (body.status_report) {
       const sr = body.status_report;
       lines.push(`🎯 *Focus:* ${sr.current_focus || "N/A"}`);
-      if (typeof sr.pending_approvals === "number") lines.push(`⏳ *Pending Approvals:* ${sr.pending_approvals}`);
-      if (Array.isArray(sr.blocked_capabilities) && sr.blocked_capabilities.length > 0) {
+      if (typeof sr.pending_approvals === "number")
+        lines.push(`⏳ *Pending Approvals:* ${sr.pending_approvals}`);
+      if (
+        Array.isArray(sr.blocked_capabilities) &&
+        sr.blocked_capabilities.length > 0
+      ) {
         lines.push(`🚫 *Blocked:* ${sr.blocked_capabilities.join(", ")}`);
       }
       if (Array.isArray(sr.next_steps) && sr.next_steps.length > 0) {
         lines.push(`📋 *Next Steps:* ${sr.next_steps.slice(0, 5).join("; ")}`);
       }
       // Surface Perplexity awareness from status report
-      if (sr.perplexity_awareness && typeof sr.perplexity_awareness.summary === "string") {
+      if (
+        sr.perplexity_awareness &&
+        typeof sr.perplexity_awareness.summary === "string"
+      ) {
         lines.push(`🔍 *Perplexity:* ${sr.perplexity_awareness.summary}`);
       }
     }
 
     if (body.plan && !body.status_report) {
-      if (typeof body.plan.focus === "string") lines.push(`🎯 *Focus:* ${body.plan.focus}`);
+      if (typeof body.plan.focus === "string")
+        lines.push(`🎯 *Focus:* ${body.plan.focus}`);
       if (Array.isArray(body.plan.actions) && body.plan.actions.length > 0) {
-        const actionSummary = body.plan.actions.slice(0, 5)
-          .map((a: Record<string, unknown>) => `• ${a.action || a.description || "unnamed"} [${a.status || "pending"}]`)
+        const actionSummary = body.plan.actions
+          .slice(0, 5)
+          .map(
+            (a: Record<string, unknown>) =>
+              `• ${a.action || a.description || "unnamed"} [${
+                a.status || "pending"
+              }]`,
+          )
           .join("\n");
         lines.push(`📋 *Actions:*\n${actionSummary}`);
       }
     }
 
     if (body.propose) {
-      const proposals = Array.isArray(body.propose) ? body.propose : (body.propose.actions || []);
+      const proposals = Array.isArray(body.propose)
+        ? body.propose
+        : body.propose.actions || [];
       if (proposals.length > 0) {
-        const risky = proposals.filter((p: Record<string, unknown>) =>
-          p.status === "blocked" || p.approval_required === true
+        const risky = proposals.filter(
+          (p: Record<string, unknown>) =>
+            p.status === "blocked" || p.approval_required === true,
         );
         if (risky.length > 0) {
           lines.push(`⚠️ *${risky.length} action(s) require approval*`);
@@ -6814,7 +9086,11 @@ async function handleTelegramCycle(): Promise<string> {
   }
 }
 
-async function handleTelegramPerplexityPush(chatId: number, userId: number, text: string): Promise<string> {
+async function handleTelegramPerplexityPush(
+  chatId: number,
+  userId: number,
+  text: string,
+): Promise<string> {
   // Remove the command prefix
   const content = text.replace(/^\/perplexity\s*/i, "").trim();
   if (!content) {
@@ -6857,17 +9133,37 @@ async function handleTelegramPerplexityPush(chatId: number, userId: number, text
   });
 
   console.error(
-    "[perplexity_shadow] Ingested via Telegram into memory_id=" + record.id +
-    " chat_id=" + String(chatId) +
-    " query_len=" + String(query.length),
+    "[perplexity_shadow] Ingested via Telegram into memory_id=" +
+      record.id +
+      " chat_id=" +
+      String(chatId) +
+      " query_len=" +
+      String(query.length),
   );
 
   return findings
-    ? `✅ Research context ingested.\n\n📋 *Query:* ${query.slice(0, 300)}\n📝 *Findings:* ${findings.slice(0, 300)}\n🆔 *ID:* ${record.id}\n\nI'll factor this into my next business PM cycle.`
-    : `✅ Research query recorded.\n\n📋 *Query:* ${query.slice(0, 300)}\n🆔 *ID:* ${record.id}\n\nI'll factor this into my next business PM cycle. Add findings with: /perplexity ${query.slice(0, 100)} | <your findings>`;
+    ? `✅ Research context ingested.\n\n📋 *Query:* ${query.slice(
+        0,
+        300,
+      )}\n📝 *Findings:* ${findings.slice(0, 300)}\n🆔 *ID:* ${
+        record.id
+      }\n\nI'll factor this into my next business PM cycle.`
+    : `✅ Research query recorded.\n\n📋 *Query:* ${query.slice(
+        0,
+        300,
+      )}\n🆔 *ID:* ${
+        record.id
+      }\n\nI'll factor this into my next business PM cycle. Add findings with: /perplexity ${query.slice(
+        0,
+        100,
+      )} | <your findings>`;
 }
 
-async function handleTelegramText(chatId: number, userId: number, text: string): Promise<void> {
+async function handleTelegramText(
+  chatId: number,
+  userId: number,
+  text: string,
+): Promise<void> {
   storeTypedMemoryRecord({
     category: "observation",
     content: text,
@@ -6888,10 +9184,12 @@ async function handleTelegramText(chatId: number, userId: number, text: string):
 
 const server = new Server(
   { name: "hermes-supervisor", version: VERSION },
-  { capabilities: { tools: {} } }
+  { capabilities: { tools: {} } },
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: publicTools }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: publicTools,
+}));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
@@ -6917,13 +9215,19 @@ async function main() {
     telegramBot = new TelegramBot(TELEGRAM_BOT_TOKEN, callbacks);
     telegramBot.start();
   } else {
-    console.error("[telegram] HERMES_TELE_BOT_TOKEN not set (and no TELEGRAM_BOT_TOKEN fallback) — bot disabled");
+    console.error(
+      "[telegram] HERMES_TELE_BOT_TOKEN not set (and no TELEGRAM_BOT_TOKEN fallback) — bot disabled",
+    );
   }
 
   const argv = process.argv.slice(2);
   const useHttp = argv.includes("--http");
-  const host = argv.includes("--host") ? argv[argv.indexOf("--host") + 1] : "0.0.0.0";
-  const port = argv.includes("--port") ? parseInt(argv[argv.indexOf("--port") + 1], 10) : 8150;
+  const host = argv.includes("--host")
+    ? argv[argv.indexOf("--host") + 1]
+    : "0.0.0.0";
+  const port = argv.includes("--port")
+    ? parseInt(argv[argv.indexOf("--port") + 1], 10)
+    : 8150;
 
   if (useHttp) {
     console.error(`Hermes MCP starting on http://${host}:${port}`);
@@ -6931,7 +9235,10 @@ async function main() {
     const httpServer = createServer(async (req, res) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, Mcp-Session-Id");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Accept, Authorization, Mcp-Session-Id",
+      );
 
       if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -6941,22 +9248,25 @@ async function main() {
 
       if (req.method === "GET" && req.url === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          status: "ok",
-          name: "hermes-supervisor",
-          version: VERSION,
-          commit: BUILD_INFO.commit,
-          ref: BUILD_INFO.ref,
-          repository: BUILD_INFO.repository,
-          builtAt: BUILD_INFO.builtAt,
-        }));
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            name: "hermes-supervisor",
+            version: VERSION,
+            commit: BUILD_INFO.commit,
+            ref: BUILD_INFO.ref,
+            repository: BUILD_INFO.repository,
+            builtAt: BUILD_INFO.builtAt,
+          }),
+        );
         return;
       }
 
       if (req.method === "POST") {
         if (HERMES_MCP_AUTH_TOKEN) {
           const auth = req.headers.authorization ?? "";
-          const bearer = typeof auth === "string" ? auth.replace(/^Bearer\s+/i, "") : "";
+          const bearer =
+            typeof auth === "string" ? auth.replace(/^Bearer\s+/i, "") : "";
           if (bearer !== HERMES_MCP_AUTH_TOKEN) {
             res.writeHead(401, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
@@ -7006,37 +9316,68 @@ async function main() {
       }
 
       // Dashboard with tabs: Status, Memory, Tools, Connections
-      if (req.method === "GET" && (req.url === "/" || req.url === "/dashboard" || req.url?.startsWith("/dashboard?"))) {
-        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+      if (
+        req.method === "GET" &&
+        (req.url === "/" ||
+          req.url === "/dashboard" ||
+          req.url?.startsWith("/dashboard?"))
+      ) {
+        const url = new URL(
+          req.url ?? "/",
+          `http://${req.headers.host ?? "localhost"}`,
+        );
         const tab = url.searchParams.get("tab") ?? "status";
         const memorySearch = url.searchParams.get("q") ?? "";
         const memoryCategory = url.searchParams.get("cat") ?? "";
 
         let memoryCount = 0;
-        let memoryRows: Array<{ id: string; category: string; content: string; created_at: string }> = [];
+        let memoryRows: Array<{
+          id: string;
+          category: string;
+          content: string;
+          created_at: string;
+        }> = [];
         try {
           const stmt = db.prepare("SELECT COUNT(*) as cnt FROM memories");
-          if (stmt.step()) memoryCount = (stmt.getAsObject() as Record<string, unknown>).cnt as number;
+          if (stmt.step())
+            memoryCount = (stmt.getAsObject() as Record<string, unknown>)
+              .cnt as number;
           stmt.free();
 
           if (memorySearch || memoryCategory) {
             let sql = "SELECT id, category, content, created_at FROM memories";
             const params: string[] = [];
-            if (memorySearch && memoryCategory) { sql += " WHERE category = ? AND content LIKE ?"; params.push(memoryCategory, `%${memorySearch}%`); }
-            else if (memoryCategory) { sql += " WHERE category = ?"; params.push(memoryCategory); }
-            else { sql += " WHERE content LIKE ?"; params.push(`%${memorySearch}%`); }
+            if (memorySearch && memoryCategory) {
+              sql += " WHERE category = ? AND content LIKE ?";
+              params.push(memoryCategory, `%${memorySearch}%`);
+            } else if (memoryCategory) {
+              sql += " WHERE category = ?";
+              params.push(memoryCategory);
+            } else {
+              sql += " WHERE content LIKE ?";
+              params.push(`%${memorySearch}%`);
+            }
             sql += " ORDER BY created_at DESC LIMIT 50";
             const stmt2 = db.prepare(sql);
             stmt2.bind(params);
             while (stmt2.step()) {
               const row = stmt2.getAsObject() as Record<string, unknown>;
-              memoryRows.push({ id: row.id as string, category: row.category as string, content: (row.content as string).slice(0, 200), created_at: row.created_at as string });
+              memoryRows.push({
+                id: row.id as string,
+                category: row.category as string,
+                content: (row.content as string).slice(0, 200),
+                created_at: row.created_at as string,
+              });
             }
             stmt2.free();
           }
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
 
-        const toolList = publicTools.map((t) => ({ name: t.name, description: t.description ?? "" })).sort((a, b) => a.name.localeCompare(b.name));
+        const toolList = publicTools
+          .map((t) => ({ name: t.name, description: t.description ?? "" }))
+          .sort((a, b) => a.name.localeCompare(b.name));
         const categories = ["status", "memory", "tools", "connections"];
 
         const html = `<!DOCTYPE html>
@@ -7089,72 +9430,147 @@ select{padding:4px 8px;background:#0d1117;border:1px solid #30363d;border-radius
 </head>
 <body>
 <h1>Hermes Supervisor</h1>
-<div class="sub">commit ${BUILD_INFO.commit.slice(0, 7)} &middot; v${VERSION} &middot; ${BUILD_INFO.ref} &middot; built ${BUILD_INFO.builtAt.replace("T", " ").slice(0, 16)}</div>
+<div class="sub">commit ${BUILD_INFO.commit.slice(
+          0,
+          7,
+        )} &middot; v${VERSION} &middot; ${
+          BUILD_INFO.ref
+        } &middot; built ${BUILD_INFO.builtAt
+          .replace("T", " ")
+          .slice(0, 16)}</div>
 
 <div class="tabs">
-${categories.map((c) => `<a class="tab${tab === c ? ' active' : ''}" href="/dashboard?tab=${c}">${c.charAt(0).toUpperCase() + c.slice(1)}</a>`).join("")}
+${categories
+  .map(
+    (c) =>
+      `<a class="tab${tab === c ? " active" : ""}" href="/dashboard?tab=${c}">${
+        c.charAt(0).toUpperCase() + c.slice(1)
+      }</a>`,
+  )
+  .join("")}
 </div>
 
-${tab === "status" ? `
+${
+  tab === "status"
+    ? `
 <div class="card">
   <h2>Runtime</h2>
   <div class="stat"><span class="label">Version</span><span class="value">${VERSION}</span></div>
-  <div class="stat"><span class="label">Commit</span><span class="value">${BUILD_INFO.commit.slice(0, 12)}</span></div>
-  <div class="stat"><span class="label">Repository</span><span class="value">${BUILD_INFO.repository}</span></div>
-  <div class="stat"><span class="label">Built</span><span class="value">${BUILD_INFO.builtAt.replace("T", " ").slice(0, 19)}</span></div>
+  <div class="stat"><span class="label">Commit</span><span class="value">${BUILD_INFO.commit.slice(
+    0,
+    12,
+  )}</span></div>
+  <div class="stat"><span class="label">Repository</span><span class="value">${
+    BUILD_INFO.repository
+  }</span></div>
+  <div class="stat"><span class="label">Built</span><span class="value">${BUILD_INFO.builtAt
+    .replace("T", " ")
+    .slice(0, 19)}</span></div>
   <div class="stat"><span class="label">Protocol</span><span class="value">${MCP_PROTOCOL_VERSION}</span></div>
 </div>
 <div class="card">
   <h2>Data</h2>
   <div class="stat"><span class="label">Memory Records</span><span class="value">${memoryCount}</span></div>
-  <div class="stat"><span class="label">MCP Tools</span><span class="value">${toolList.length}</span></div>
+  <div class="stat"><span class="label">MCP Tools</span><span class="value">${
+    toolList.length
+  }</span></div>
   <div class="stat"><span class="label">Database Path</span><span class="value">${DB_PATH}</span></div>
   <div class="stat"><span class="label">VPS ID</span><span class="value">${VPS_ID}</span></div>
 </div>
-` : ""}
+`
+    : ""
+}
 
-${tab === "memory" ? `
+${
+  tab === "memory"
+    ? `
 <div class="card">
   <h2>Memory Browser</h2>
   <div class="mem-header">
     <form method="get" action="/dashboard">
       <input type="hidden" name="tab" value="memory">
-      <input class="search-box" type="text" name="q" value="${memorySearch.replace(/"/g, '&quot;')}" placeholder="Search memory..." style="width:300px">
+      <input class="search-box" type="text" name="q" value="${memorySearch.replace(
+        /"/g,
+        "&quot;",
+      )}" placeholder="Search memory..." style="width:300px">
       <select name="cat">
         <option value="">All categories</option>
-        <option value="decision"${memoryCategory==='decision'?' selected':''}>decision</option>
-        <option value="fact"${memoryCategory==='fact'?' selected':''}>fact</option>
-        <option value="project"${memoryCategory==='project'?' selected':''}>project</option>
-        <option value="learning"${memoryCategory==='learning'?' selected':''}>learning</option>
-        <option value="plan"${memoryCategory==='plan'?' selected':''}>plan</option>
-        <option value="session_summary"${memoryCategory==='session_summary'?' selected':''}>session_summary</option>
+        <option value="decision"${
+          memoryCategory === "decision" ? " selected" : ""
+        }>decision</option>
+        <option value="fact"${
+          memoryCategory === "fact" ? " selected" : ""
+        }>fact</option>
+        <option value="project"${
+          memoryCategory === "project" ? " selected" : ""
+        }>project</option>
+        <option value="learning"${
+          memoryCategory === "learning" ? " selected" : ""
+        }>learning</option>
+        <option value="plan"${
+          memoryCategory === "plan" ? " selected" : ""
+        }>plan</option>
+        <option value="session_summary"${
+          memoryCategory === "session_summary" ? " selected" : ""
+        }>session_summary</option>
       </select>
       <button style="padding:6px 14px;background:#238636;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px">Search</button>
     </form>
   </div>
-  ${memoryRows.length === 0 ? '<div style="color:#8b949e;font-size:13px;padding:10px 0">${memorySearch || memoryCategory ? "No matching records found." : "Use the search above to browse memory."}</div>' : ""}
-  ${memoryRows.map((m) => `
+  ${
+    memoryRows.length === 0
+      ? '<div style="color:#8b949e;font-size:13px;padding:10px 0">${memorySearch || memoryCategory ? "No matching records found." : "Use the search above to browse memory."}</div>'
+      : ""
+  }
+  ${memoryRows
+    .map(
+      (m) => `
   <div class="mem-item">
     <span class="mem-cat">[${m.category}]</span>
-    <span class="mem-time">${(m.created_at ?? "").replace("T", " ").slice(0, 19)}</span>
-    <div class="mem-text">${m.content.replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 300)}</div>
-  </div>`).join("")}
-  ${memoryRows.length > 0 ? `<div style="color:#8b949e;font-size:11px;margin-top:8px">${memoryRows.length} result${memoryRows.length===1?'':'s'}</div>` : ""}
+    <span class="mem-time">${(m.created_at ?? "")
+      .replace("T", " ")
+      .slice(0, 19)}</span>
+    <div class="mem-text">${m.content
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .slice(0, 300)}</div>
+  </div>`,
+    )
+    .join("")}
+  ${
+    memoryRows.length > 0
+      ? `<div style="color:#8b949e;font-size:11px;margin-top:8px">${
+          memoryRows.length
+        } result${memoryRows.length === 1 ? "" : "s"}</div>`
+      : ""
+  }
 </div>
-` : ""}
+`
+    : ""
+}
 
-${tab === "tools" ? `
+${
+  tab === "tools"
+    ? `
 <div class="card">
   <h2>MCP Tools (${toolList.length})</h2>
-  ${toolList.map((t) => `
+  ${toolList
+    .map(
+      (t) => `
   <div class="tool-row">
     <span class="tool-name">${t.name}</span>
     <span class="tool-desc">${t.description.slice(0, 120)}</span>
-  </div>`).join("")}
+  </div>`,
+    )
+    .join("")}
 </div>
-` : ""}
+`
+    : ""
+}
 
-${tab === "connections" ? `
+${
+  tab === "connections"
+    ? `
 <div class="card">
   <h2>MCP Connections</h2>
   <div class="conn-row">
@@ -7185,7 +9601,9 @@ ${tab === "connections" ? `
   <div class="conn-row">
     <span class="conn-dot conn-dot-up"></span>
     <span class="conn-name">Factory API</span>
-    <span class="conn-detail">REST &middot; sessions, missions (${FACTORY_API_KEY ? 'configured' : 'not configured'})</span>
+    <span class="conn-detail">REST &middot; sessions, missions (${
+      FACTORY_API_KEY ? "configured" : "not configured"
+    })</span>
   </div>
 </div>
 <div class="card">
@@ -7195,10 +9613,16 @@ ${tab === "connections" ? `
     <div>Dashboard: <code>GET /</code></div>
     <div>MCP RPC: <code>POST /</code> (streamable HTTP)</div>
     <div>Perplexity Report: <code>POST /perplexity/report</code></div>
-    ${HERMES_MCP_AUTH_TOKEN ? '<div style="margin-top:6px"><span class="badge badge-ok">MCP Auth enabled</span></div>' : '<div style="margin-top:6px"><span style="color:#d29922">MCP Auth disabled (no token set)</span></div>'}
+    ${
+      HERMES_MCP_AUTH_TOKEN
+        ? '<div style="margin-top:6px"><span class="badge badge-ok">MCP Auth enabled</span></div>'
+        : '<div style="margin-top:6px"><span style="color:#d29922">MCP Auth disabled (no token set)</span></div>'
+    }
   </div>
 </div>
-` : ""}
+`
+    : ""
+}
 
 </body>
 </html>`;
@@ -7232,13 +9656,20 @@ ${tab === "connections" ? `
   }
 }
 
-type RpcRequest = { jsonrpc: string; id?: number | string | null; method: string; params?: Record<string, unknown> };
+type RpcRequest = {
+  jsonrpc: string;
+  id?: number | string | null;
+  method: string;
+  params?: Record<string, unknown>;
+};
 
 function isNotification(rpc: RpcRequest): boolean {
   return rpc.id === undefined || rpc.id === null;
 }
 
-async function handleRpc(rpc: RpcRequest): Promise<Record<string, unknown> | null> {
+async function handleRpc(
+  rpc: RpcRequest,
+): Promise<Record<string, unknown> | null> {
   // Notifications get no response per MCP spec.
   if (isNotification(rpc) && rpc.method !== "notifications/initialized") {
     return null;
@@ -7268,7 +9699,10 @@ async function handleRpc(rpc: RpcRequest): Promise<Record<string, unknown> | nul
         result: { tools: publicTools },
       };
     case "tools/call": {
-      const params = rpc.params as { name: string; arguments?: Record<string, unknown> };
+      const params = rpc.params as {
+        name: string;
+        arguments?: Record<string, unknown>;
+      };
       const result = await dispatchTool(params.name, params.arguments ?? {});
       return { jsonrpc: "2.0", id: rpc.id, result };
     }
@@ -7286,6 +9720,21 @@ async function handleRpc(rpc: RpcRequest): Promise<Record<string, unknown> | nul
   }
 }
 
-process.on("SIGTERM", () => { if (saveTimer) { clearTimeout(saveTimer); saveDb(); } process.exit(0); });
-process.on("SIGINT", () => { if (saveTimer) { clearTimeout(saveTimer); saveDb(); } process.exit(0); });
-main().catch((err) => { console.error("Fatal:", err); process.exit(1); });
+process.on("SIGTERM", () => {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveDb();
+  }
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveDb();
+  }
+  process.exit(0);
+});
+main().catch((err) => {
+  console.error("Fatal:", err);
+  process.exit(1);
+});

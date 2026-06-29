@@ -94,7 +94,9 @@ async function main() {
   const db = new SQL.Database(fileBefore);
 
   const rows = [];
-  const stmt = db.prepare("SELECT id, category, content, metadata, created_at FROM memories ORDER BY created_at ASC");
+  const stmt = db.prepare(
+    "SELECT id, category, content, metadata, created_at FROM memories ORDER BY created_at ASC",
+  );
   while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
 
@@ -104,7 +106,8 @@ async function main() {
 
   for (const row of rows) {
     byCategory[row.category] = (byCategory[row.category] ?? 0) + 1;
-    const { safeContent, contentChanged, safeMetadata, metadataChanged } = evaluateRow(row.content, row.metadata);
+    const { safeContent, contentChanged, safeMetadata, metadataChanged } =
+      evaluateRow(row.content, row.metadata);
     if (contentChanged || metadataChanged) {
       const tags = redactionTags(
         contentChanged ? safeContent : "",
@@ -130,8 +133,14 @@ async function main() {
     for (const a of affected) {
       const set = [];
       const params = [];
-      if (a.content_changed) { set.push("content = ?"); params.push(a._safeContent); }
-      if (a.metadata_changed) { set.push("metadata = ?"); params.push(a._safeMetadata); }
+      if (a.content_changed) {
+        set.push("content = ?");
+        params.push(a._safeContent);
+      }
+      if (a.metadata_changed) {
+        set.push("metadata = ?");
+        params.push(a._safeMetadata);
+      }
       params.push(a.id);
       db.run(`UPDATE memories SET ${set.join(", ")} WHERE id = ?`, params);
       applied++;
@@ -191,12 +200,17 @@ async function main() {
   if (MANIFEST_PATH) writeFileSync(MANIFEST_PATH, json);
 
   if (APPLY && residual > 0) {
-    console.error(`ERROR: ${residual} rows still contain secret-like values after sweep.`);
+    console.error(
+      `ERROR: ${residual} rows still contain secret-like values after sweep.`,
+    );
     process.exit(1);
   }
 }
 
 main().catch((err) => {
-  console.error("Sweep error:", err instanceof Error ? err.message : String(err));
+  console.error(
+    "Sweep error:",
+    err instanceof Error ? err.message : String(err),
+  );
   process.exit(1);
 });

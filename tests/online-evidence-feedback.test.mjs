@@ -8,7 +8,9 @@ function assert(condition, message) {
 }
 
 function correlationId(suffix = "case") {
-  return `${VALIDATION_PREFIX}-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${VALIDATION_PREFIX}-${suffix}-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
 }
 
 /**
@@ -45,7 +47,8 @@ async function mcpCall(method, params = {}) {
   const dataLine = raw.split("\n").find((line) => line.startsWith("data:"));
   if (!dataLine) throw new Error("No SSE data line found");
   const envelope = JSON.parse(dataLine.slice(5).trim());
-  if (envelope.error) throw new Error(`MCP error: ${JSON.stringify(envelope.error)}`);
+  if (envelope.error)
+    throw new Error(`MCP error: ${JSON.stringify(envelope.error)}`);
   return envelope.result;
 }
 
@@ -74,7 +77,8 @@ async function testValOnline008_SuccessClaimsNeedEvidence() {
         source: "perplexity_api",
         tool: "research",
         task_id: `${cid}-task-research`,
-        result_excerpt: "Research returned current appraisal workflow automation insights.",
+        result_excerpt:
+          "Research returned current appraisal workflow automation insights.",
         evidence_id: `${cid}-evidence-research`,
         observed_fields: { citation_count: 3, topic: "appraisal automation" },
       },
@@ -87,28 +91,57 @@ async function testValOnline008_SuccessClaimsNeedEvidence() {
   });
 
   const actions = result.propose?.actions || [];
-  const successful = actions.find((action) => action.action === "perplexity_research_step_success");
+  const successful = actions.find(
+    (action) => action.action === "perplexity_research_step_success",
+  );
   assert(successful, "Expected success action in propose.actions");
-  assert(successful.evidence?.success_claim === true, "Success action should be marked as success claim");
-  assert(successful.evidence?.evidence_complete === true, "Success action should include complete evidence");
-  assert(typeof successful.evidence?.source === "string" && successful.evidence.source.length > 0, "Success evidence should include source");
   assert(
-    (typeof successful.evidence?.tool === "string" && successful.evidence.tool.length > 0)
-    || (typeof successful.evidence?.task_id === "string" && successful.evidence.task_id.length > 0),
+    successful.evidence?.success_claim === true,
+    "Success action should be marked as success claim",
+  );
+  assert(
+    successful.evidence?.evidence_complete === true,
+    "Success action should include complete evidence",
+  );
+  assert(
+    typeof successful.evidence?.source === "string" &&
+      successful.evidence.source.length > 0,
+    "Success evidence should include source",
+  );
+  assert(
+    (typeof successful.evidence?.tool === "string" &&
+      successful.evidence.tool.length > 0) ||
+      (typeof successful.evidence?.task_id === "string" &&
+        successful.evidence.task_id.length > 0),
     "Success evidence should include tool or task_id",
   );
 
-  const missingEvidence = actions.find((action) => action.action === "portal_read_without_evidence");
-  assert(missingEvidence, "Expected missing-evidence action in propose.actions");
-  assert(missingEvidence.status === "blocked_missing_evidence", "Missing evidence success claim should be blocked");
+  const missingEvidence = actions.find(
+    (action) => action.action === "portal_read_without_evidence",
+  );
+  assert(
+    missingEvidence,
+    "Expected missing-evidence action in propose.actions",
+  );
+  assert(
+    missingEvidence.status === "blocked_missing_evidence",
+    "Missing evidence success claim should be blocked",
+  );
 
   const blocked = result.propose?.blocked_actions || [];
-  assert(blocked.some((entry) => entry.blocker_type === "online_missing_evidence"), "Blocked actions should include typed missing-evidence blocker");
-  console.log("  PASS: online success claims are evidence-backed or blocked as missing evidence");
+  assert(
+    blocked.some((entry) => entry.blocker_type === "online_missing_evidence"),
+    "Blocked actions should include typed missing-evidence blocker",
+  );
+  console.log(
+    "  PASS: online success claims are evidence-backed or blocked as missing evidence",
+  );
 }
 
 async function testValOnline009_TypedProviderFailures() {
-  console.log("\n=== VAL-ONLINE-009 provider/auth failures become typed blockers ===");
+  console.log(
+    "\n=== VAL-ONLINE-009 provider/auth failures become typed blockers ===",
+  );
   const cid = correlationId("failures");
   const result = await callTool("business_pm_loop", {
     objective: `Validate typed online failure handling [${cid}]`,
@@ -139,19 +172,30 @@ async function testValOnline009_TypedProviderFailures() {
   const blockers = result.propose?.online_failure_blockers || [];
   const failureTypes = new Set(blockers.map((entry) => entry.failure_type));
   assert(failureTypes.has("rate_limit"), "Expected typed rate_limit blocker");
-  assert(failureTypes.has("auth_failure"), "Expected typed auth_failure blocker");
+  assert(
+    failureTypes.has("auth_failure"),
+    "Expected typed auth_failure blocker",
+  );
   assert(failureTypes.has("mfa_captcha"), "Expected typed mfa_captcha blocker");
 
   const capabilities = result.propose?.capability_requests || [];
   assert(
-    capabilities.some((entry) => typeof entry.capability === "string" && entry.capability.includes("authenticated_session")),
+    capabilities.some(
+      (entry) =>
+        typeof entry.capability === "string" &&
+        entry.capability.includes("authenticated_session"),
+    ),
     "Auth/session failures should produce capability requests when applicable",
   );
-  console.log("  PASS: provider/auth/rate-limit/MFA failures are surfaced as typed blockers");
+  console.log(
+    "  PASS: provider/auth/rate-limit/MFA failures are surfaced as typed blockers",
+  );
 }
 
 async function testValOnline010_MutatingActionsApprovalGated() {
-  console.log("\n=== VAL-ONLINE-010 mutating online actions are approval-gated ===");
+  console.log(
+    "\n=== VAL-ONLINE-010 mutating online actions are approval-gated ===",
+  );
   const cid = correlationId("approval");
   const result = await callTool("business_pm_loop", {
     objective: `Validate approval gating for mutating online actions [${cid}]`,
@@ -178,17 +222,33 @@ async function testValOnline010_MutatingActionsApprovalGated() {
   const actions = result.propose?.actions || [];
   assert(actions.length >= 3, "Expected three classified mutating actions");
   for (const action of actions) {
-    assert(action.approval_required === true, `Action ${action.action} should require approval`);
-    assert(action.status === "awaiting_approval", `Action ${action.action} should be awaiting_approval`);
-    assert(action.risk_level === "dangerous-global-mutation", `Action ${action.action} should be classified as dangerous-global-mutation`);
+    assert(
+      action.approval_required === true,
+      `Action ${action.action} should require approval`,
+    );
+    assert(
+      action.status === "awaiting_approval",
+      `Action ${action.action} should be awaiting_approval`,
+    );
+    assert(
+      action.risk_level === "dangerous-global-mutation",
+      `Action ${action.action} should be classified as dangerous-global-mutation`,
+    );
   }
   const approvals = result.propose?.approval_requests || [];
-  assert(approvals.length >= 3, "Blocked mutating actions should create approval request records");
-  console.log("  PASS: business-impacting online mutations are proposal-only and approval-gated");
+  assert(
+    approvals.length >= 3,
+    "Blocked mutating actions should create approval request records",
+  );
+  console.log(
+    "  PASS: business-impacting online mutations are proposal-only and approval-gated",
+  );
 }
 
 async function testValOnline011AndCross010_LocalTaskOutcomesFeedPlanning() {
-  console.log("\n=== VAL-ONLINE-011 / VAL-CROSS-010 local/browser outcomes return to planning ===");
+  console.log(
+    "\n=== VAL-ONLINE-011 / VAL-CROSS-010 local/browser outcomes return to planning ===",
+  );
   const seedCid = correlationId("localtask-seed");
   const followCid = correlationId("localtask-follow");
 
@@ -209,8 +269,14 @@ async function testValOnline011AndCross010_LocalTaskOutcomesFeedPlanning() {
   });
 
   const ingestedNow = seeded.recall?.local_task_outcomes || [];
-  assert(ingestedNow.length > 0, "Cycle should ingest simulated local task outcomes");
-  assert((seeded.learn?.local_task_outcomes_ingested || []).length > 0, "Learn section should expose ingested local task outcomes");
+  assert(
+    ingestedNow.length > 0,
+    "Cycle should ingest simulated local task outcomes",
+  );
+  assert(
+    (seeded.learn?.local_task_outcomes_ingested || []).length > 0,
+    "Learn section should expose ingested local task outcomes",
+  );
 
   // Wait for debounced SQLite persistence to flush before follow-up recall.
   await new Promise((r) => setTimeout(r, 1000));
@@ -223,17 +289,30 @@ async function testValOnline011AndCross010_LocalTaskOutcomesFeedPlanning() {
 
   const priorOnlineObs = follow.plan?.prior_online_observations || [];
   assert(
-    priorOnlineObs.some((entry) => String(entry.source || "").includes("local_task_completion")),
+    priorOnlineObs.some((entry) =>
+      String(entry.source || "").includes("local_task_completion"),
+    ),
     "Follow-up plan should reference prior local_task_completion observations",
   );
-  const integrationStep = (follow.plan?.actions || []).find((entry) => entry.step === "Integrate recalled decisions and workflows into current plan");
+  const integrationStep = (follow.plan?.actions || []).find(
+    (entry) =>
+      entry.step ===
+      "Integrate recalled decisions and workflows into current plan",
+  );
   assert(integrationStep, "Follow-up plan should include integration step");
-  assert((integrationStep.evidence_ids || []).length > 0, "Integration step should include outcome-linked evidence IDs");
-  console.log("  PASS: local/browser task completion is ingested and fed into subsequent planning");
+  assert(
+    (integrationStep.evidence_ids || []).length > 0,
+    "Integration step should include outcome-linked evidence IDs",
+  );
+  console.log(
+    "  PASS: local/browser task completion is ingested and fed into subsequent planning",
+  );
 }
 
 async function testValOnline012AndCross004_PriorOnlineSignalsRefinePlan() {
-  console.log("\n=== VAL-ONLINE-012 / VAL-CROSS-004 prior online observations and gaps refine next plan ===");
+  console.log(
+    "\n=== VAL-ONLINE-012 / VAL-CROSS-004 prior online observations and gaps refine next plan ===",
+  );
   const seedCid = correlationId("gap-seed");
   const followCid = correlationId("gap-follow");
 
@@ -249,7 +328,10 @@ async function testValOnline012AndCross004_PriorOnlineSignalsRefinePlan() {
       },
     ],
   });
-  assert((first.propose?.capability_requests || []).length > 0, "Seed cycle should create capability request(s)");
+  assert(
+    (first.propose?.capability_requests || []).length > 0,
+    "Seed cycle should create capability request(s)",
+  );
 
   // Wait for debounced SQLite persistence to flush before follow-up recall.
   await new Promise((r) => setTimeout(r, 1000));
@@ -261,21 +343,40 @@ async function testValOnline012AndCross004_PriorOnlineSignalsRefinePlan() {
   });
 
   const priorGaps = second.plan?.prior_online_capability_gaps || [];
-  assert(priorGaps.length > 0, "Follow-up plan should include prior online capability gaps");
+  assert(
+    priorGaps.length > 0,
+    "Follow-up plan should include prior online capability gaps",
+  );
   const gapInputs = second.plan?.capability_gap_inputs || [];
-  assert(gapInputs.length > 0, "Follow-up plan should carry capability gaps as explicit inputs");
+  assert(
+    gapInputs.length > 0,
+    "Follow-up plan should carry capability gaps as explicit inputs",
+  );
 
-  const blockerStep = (second.plan?.actions || []).find((entry) => entry.step === "Resolve blocked capabilities and pending approvals");
+  const blockerStep = (second.plan?.actions || []).find(
+    (entry) =>
+      entry.step === "Resolve blocked capabilities and pending approvals",
+  );
   assert(blockerStep, "Plan should contain blocker-resolution step");
-  assert((blockerStep.evidence_ids || []).length > 0, "Blocker step should include gap-linked evidence IDs");
+  assert(
+    (blockerStep.evidence_ids || []).length > 0,
+    "Blocker step should include gap-linked evidence IDs",
+  );
 
   const recommendations = second.plan?.online_step_recommendations || [];
-  assert(recommendations.length > 0, "Follow-up plan should provide refined online step recommendations");
   assert(
-    (second.plan?.learning_influenced_changes || []).some((entry) => String(entry).toLowerCase().includes("prior online")),
+    recommendations.length > 0,
+    "Follow-up plan should provide refined online step recommendations",
+  );
+  assert(
+    (second.plan?.learning_influenced_changes || []).some((entry) =>
+      String(entry).toLowerCase().includes("prior online"),
+    ),
     "Plan should report that prior online observations influenced planning",
   );
-  console.log("  PASS: prior online observations and capability gaps refine the next plan");
+  console.log(
+    "  PASS: prior online observations and capability gaps refine the next plan",
+  );
 }
 
 async function main() {
@@ -306,7 +407,9 @@ async function main() {
   }
 
   console.log("\n=======================================");
-  console.log(`Results: ${passed} passed, ${failed} failed, ${tests.length} total`);
+  console.log(
+    `Results: ${passed} passed, ${failed} failed, ${tests.length} total`,
+  );
   if (failed > 0) process.exit(1);
 }
 

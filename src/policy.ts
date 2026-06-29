@@ -32,119 +32,252 @@ const PROJECT_FIELD: Record<string, string> = {
 };
 
 // Mutating tools that are always dangerous/global regardless of arguments.
-const DANGEROUS_ALWAYS = new Set(["vps_restart", "vps_snapshot", "vps_stop_project"]);
+const DANGEROUS_ALWAYS = new Set([
+  "vps_restart",
+  "vps_snapshot",
+  "vps_stop_project",
+]);
 
 // Project-targeted tools that may be Hermes-scoped when they target only "hermes".
-const SCOPED_CAPABLE = new Set(["vps_restart_project", "vps_start_project", "vps_deploy"]);
+const SCOPED_CAPABLE = new Set([
+  "vps_restart_project",
+  "vps_start_project",
+  "vps_deploy",
+]);
 
 export const RISK_METADATA: Record<string, RiskMetadata> = {
   research: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Read-only Perplexity research; no state change.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "Read-only Perplexity research; no state change.",
   },
   vps_info: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Read-only Hostinger VPS info.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "Read-only Hostinger VPS info.",
   },
   vps_metrics: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Read-only VPS metrics.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "Read-only VPS metrics.",
   },
   vps_projects: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Read-only list of Docker Compose projects.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "Read-only list of Docker Compose projects.",
   },
   vps_project_logs: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Read-only project logs.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "Read-only project logs.",
   },
   memory_recall: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Read-only memory recall.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "Read-only memory recall.",
   },
   memory_store: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Low-impact write to Hermes memory; no infrastructure change.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary: "Low-impact write to Hermes memory; no infrastructure change.",
   },
   plan: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Generates a plan and stores it in Hermes memory; no infrastructure change.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary:
+      "Generates a plan and stores it in Hermes memory; no infrastructure change.",
   },
   business_management_cycle: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Writes fleet run/events/artifacts plus intents, local tasks, capability requests, and correlated knowledge records for Hermes business-management cycles.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary:
+      "Writes fleet run/events/artifacts plus intents, local tasks, capability requests, and correlated knowledge records for Hermes business-management cycles.",
   },
   fleet_get_run_details: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Read-only retrieval of fleet run details and artifact contents.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "Read-only retrieval of fleet run details and artifact contents.",
   },
   business_pm_loop: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Canonical business PM loop: perceive/recall/plan/propose/learn. Persists learning and decision records, risk-classifies proposed actions, blocks unsafe actions, and generates business status reports. Does not directly mutate VPS or infrastructure.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary:
+      "Canonical business PM loop: perceive/recall/plan/propose/learn. Persists learning and decision records, risk-classifies proposed actions, blocks unsafe actions, and generates business status reports. Does not directly mutate VPS or infrastructure.",
   },
   business_status_report: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "High-level business operations status report summarizing current focus, signals, projects, pending approvals, blocked capabilities, risks, and next steps.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary:
+      "High-level business operations status report summarizing current focus, signals, projects, pending approvals, blocked capabilities, risks, and next steps.",
   },
   perplexity_ingest: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Ingest Perplexity research context (queries, threads, findings) into Hermes observation memory for shadow learning. Push-based fallback when direct Perplexity activity API is unavailable.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary:
+      "Ingest Perplexity research context (queries, threads, findings) into Hermes observation memory for shadow learning. Push-based fallback when direct Perplexity activity API is unavailable.",
   },
   perplexity_shadow_status: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Retrieve recent Perplexity shadow observations from Hermes memory to surface Perplexity-derived awareness.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary:
+      "Retrieve recent Perplexity shadow observations from Hermes memory to surface Perplexity-derived awareness.",
   },
   factory_list_sessions: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "List recent Factory Droid sessions from the Factory REST API.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "List recent Factory Droid sessions from the Factory REST API.",
   },
   factory_get_session: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Get a Factory Droid session by ID with optional message history.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary: "Get a Factory Droid session by ID with optional message history.",
   },
   factory_sync_sessions: {
-    level: "read-only", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "read", summary: "Read synchronized progress across multiple Factory Droid sessions with optional latest message snapshots.",
+    level: "read-only",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "read",
+    summary:
+      "Read synchronized progress across multiple Factory Droid sessions with optional latest message snapshots.",
   },
   factory_autoloop: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Runs an autonomous multi-session orchestration loop that polls Factory sessions, issues follow-up prompts, and stores sync learning records.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary:
+      "Runs an autonomous multi-session orchestration loop that polls Factory sessions, issues follow-up prompts, and stores sync learning records.",
   },
   factory_create_mission: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Creates a new Factory mission. No infrastructure change; stored in Hermes memory.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary:
+      "Creates a new Factory mission. No infrastructure change; stored in Hermes memory.",
   },
   sfrep_context_transport: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Reads facts from a workfile and writes sfrep/payload.json. No infrastructure change; output scoped to the workfile directory.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary:
+      "Reads facts from a workfile and writes sfrep/payload.json. No infrastructure change; output scoped to the workfile directory.",
   },
   sfrep_autonomous_handoff: {
-    level: "low-impact-write", mutating: false, confirmation_required: false, approval_required: false,
-    scope: "memory", summary: "Runs the full SFREP context transport with verification loop. Multiple attempts with diagnostics. Writes only to workfile directory.",
+    level: "low-impact-write",
+    mutating: false,
+    confirmation_required: false,
+    approval_required: false,
+    scope: "memory",
+    summary:
+      "Runs the full SFREP context transport with verification loop. Multiple attempts with diagnostics. Writes only to workfile directory.",
   },
   vps_restart_project: {
-    level: "hermes-scoped-mutation", mutating: true, confirmation_required: true, approval_required: true,
-    scope: "hermes", summary: "Restarts a Docker project. Hermes-scoped when project=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",
+    level: "hermes-scoped-mutation",
+    mutating: true,
+    confirmation_required: true,
+    approval_required: true,
+    scope: "hermes",
+    summary:
+      "Restarts a Docker project. Hermes-scoped when project=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",
   },
   vps_start_project: {
-    level: "hermes-scoped-mutation", mutating: true, confirmation_required: true, approval_required: true,
-    scope: "hermes", summary: "Starts a Docker project. Hermes-scoped when project=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",
+    level: "hermes-scoped-mutation",
+    mutating: true,
+    confirmation_required: true,
+    approval_required: true,
+    scope: "hermes",
+    summary:
+      "Starts a Docker project. Hermes-scoped when project=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",
   },
   vps_deploy: {
-    level: "hermes-scoped-mutation", mutating: true, confirmation_required: true, approval_required: true,
-    scope: "hermes", summary: "Deploys/redeploys a Docker project. Hermes-scoped when name=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",
+    level: "hermes-scoped-mutation",
+    mutating: true,
+    confirmation_required: true,
+    approval_required: true,
+    scope: "hermes",
+    summary:
+      "Deploys/redeploys a Docker project. Hermes-scoped when name=hermes (requires validation + approval); any other project is dangerous/global and requires explicit approval.",
   },
   vps_stop_project: {
-    level: "dangerous-global-mutation", mutating: true, confirmation_required: true, approval_required: true,
-    scope: "global", summary: "Stops a Docker project. Dangerous/global; requires confirmation and explicit approval.",
+    level: "dangerous-global-mutation",
+    mutating: true,
+    confirmation_required: true,
+    approval_required: true,
+    scope: "global",
+    summary:
+      "Stops a Docker project. Dangerous/global; requires confirmation and explicit approval.",
   },
   vps_snapshot: {
-    level: "dangerous-global-mutation", mutating: true, confirmation_required: true, approval_required: true,
-    scope: "global", summary: "Creates a VPS snapshot, overwriting any existing snapshot. Dangerous/global; requires confirmation and explicit approval.",
+    level: "dangerous-global-mutation",
+    mutating: true,
+    confirmation_required: true,
+    approval_required: true,
+    scope: "global",
+    summary:
+      "Creates a VPS snapshot, overwriting any existing snapshot. Dangerous/global; requires confirmation and explicit approval.",
   },
   vps_restart: {
-    level: "dangerous-global-mutation", mutating: true, confirmation_required: true, approval_required: true,
-    scope: "global", summary: "Full VPS restart. Dangerous/global; requires confirmation and explicit approval.",
+    level: "dangerous-global-mutation",
+    mutating: true,
+    confirmation_required: true,
+    approval_required: true,
+    scope: "global",
+    summary:
+      "Full VPS restart. Dangerous/global; requires confirmation and explicit approval.",
   },
 };
 
@@ -160,7 +293,12 @@ export interface PolicyDenial {
 export interface PolicyResult {
   allowed: boolean;
   effective_level: RiskLevel;
-  scope_decision: "read" | "memory" | "hermes-scoped" | "non-hermes-global" | "global";
+  scope_decision:
+    | "read"
+    | "memory"
+    | "hermes-scoped"
+    | "non-hermes-global"
+    | "global";
   denial?: PolicyDenial;
 }
 
@@ -172,7 +310,14 @@ type Args = Record<string, unknown>;
 
 function projectCandidates(args: Args): string[] {
   const out: string[] = [];
-  for (const key of ["project", "projects", "name", "names", "target", "targets"]) {
+  for (const key of [
+    "project",
+    "projects",
+    "name",
+    "names",
+    "target",
+    "targets",
+  ]) {
     const v = args[key];
     if (Array.isArray(v)) {
       for (const item of v) if (typeof item === "string") out.push(item);
@@ -194,13 +339,18 @@ function approvalProvided(args: Args): boolean {
   if (typeof a === "string") return a.trim().length > 0;
   if (a && typeof a === "object") {
     const o = a as Record<string, unknown>;
-    return Boolean(o.approved_by || o.approver || o.token || o.reason || o.policy);
+    return Boolean(
+      o.approved_by || o.approver || o.token || o.reason || o.policy,
+    );
   }
   return false;
 }
 
 function validationIdProvided(args: Args): boolean {
-  return typeof args.validation_id === "string" && args.validation_id.trim().length > 0;
+  return (
+    typeof args.validation_id === "string" &&
+    args.validation_id.trim().length > 0
+  );
 }
 
 function validationEvidenceValid(args: Args, buildCommit: string): boolean {
@@ -213,7 +363,11 @@ function validationEvidenceValid(args: Args, buildCommit: string): boolean {
   // "current" evidence: the validated commit must match the deployed build commit
   // (allow short/long hash via prefix comparison).
   if (buildCommit && buildCommit !== "unknown") {
-    return buildCommit.startsWith(commit) || commit.startsWith(buildCommit) || commit === buildCommit;
+    return (
+      buildCommit.startsWith(commit) ||
+      commit.startsWith(buildCommit) ||
+      commit === buildCommit
+    );
   }
   // No build commit available to compare against: accept a well-formed evidence object.
   return true;
@@ -229,13 +383,26 @@ function deny(
   return {
     allowed: false,
     effective_level: risk_level,
-    scope_decision: risk_level === "dangerous-global-mutation" ? "global" : "hermes-scoped",
-    denial: { status: "denied", reason, risk_level, tool, required_fields, message },
+    scope_decision:
+      risk_level === "dangerous-global-mutation" ? "global" : "hermes-scoped",
+    denial: {
+      status: "denied",
+      reason,
+      risk_level,
+      tool,
+      required_fields,
+      message,
+    },
   };
 }
 
-export function evaluateToolPolicy(toolName: string, rawArgs: unknown, ctx: PolicyContext): PolicyResult {
-  const args: Args = (rawArgs && typeof rawArgs === "object") ? (rawArgs as Args) : {};
+export function evaluateToolPolicy(
+  toolName: string,
+  rawArgs: unknown,
+  ctx: PolicyContext,
+): PolicyResult {
+  const args: Args =
+    rawArgs && typeof rawArgs === "object" ? (rawArgs as Args) : {};
   const meta = RISK_METADATA[toolName];
 
   if (!meta || !meta.mutating) {
@@ -269,7 +436,11 @@ export function evaluateToolPolicy(toolName: string, rawArgs: unknown, ctx: Poli
         "Dangerous/global VPS action blocked: explicit approval is required. No state was changed.",
       );
     }
-    return { allowed: true, effective_level: "dangerous-global-mutation", scope_decision: "global" };
+    return {
+      allowed: true,
+      effective_level: "dangerous-global-mutation",
+      scope_decision: "global",
+    };
   }
 
   // Project-targeted scoped-capable tools.
@@ -282,11 +453,19 @@ export function evaluateToolPolicy(toolName: string, rawArgs: unknown, ctx: Poli
           toolName,
           "approval_required",
           "dangerous-global-mutation",
-          ["confirm=true", `${PROJECT_FIELD[toolName]}="hermes" for scoped automation`, "approval"],
+          [
+            "confirm=true",
+            `${PROJECT_FIELD[toolName]}="hermes" for scoped automation`,
+            "approval",
+          ],
           "Non-Hermes project control is a dangerous/global action and requires explicit approval. No state was changed.",
         );
       }
-      return { allowed: true, effective_level: "dangerous-global-mutation", scope_decision: "non-hermes-global" };
+      return {
+        allowed: true,
+        effective_level: "dangerous-global-mutation",
+        scope_decision: "non-hermes-global",
+      };
     }
 
     // Hermes-scoped redeploy/restart policy.
@@ -297,7 +476,9 @@ export function evaluateToolPolicy(toolName: string, rawArgs: unknown, ctx: Poli
       sawValidationGap = true;
     }
     if (!validationEvidenceValid(args, ctx.buildCommit)) {
-      missing.push("validation_evidence{commit (matching deployed commit), build_passed:true}");
+      missing.push(
+        "validation_evidence{commit (matching deployed commit), build_passed:true}",
+      );
       sawValidationGap = true;
     }
     if (!approvalProvided(args)) {
@@ -312,7 +493,11 @@ export function evaluateToolPolicy(toolName: string, rawArgs: unknown, ctx: Poli
         "Hermes-scoped redeploy/restart blocked: requires project=hermes, current source validation evidence, and approval provenance. No state was changed.",
       );
     }
-    return { allowed: true, effective_level: "hermes-scoped-mutation", scope_decision: "hermes-scoped" };
+    return {
+      allowed: true,
+      effective_level: "hermes-scoped-mutation",
+      scope_decision: "hermes-scoped",
+    };
   }
 
   // Defensive default for any other mutating tool: require approval.
@@ -325,13 +510,22 @@ export function evaluateToolPolicy(toolName: string, rawArgs: unknown, ctx: Poli
       "Mutating tool blocked: explicit approval is required. No state was changed.",
     );
   }
-  return { allowed: true, effective_level: meta.level, scope_decision: "global" };
+  return {
+    allowed: true,
+    effective_level: meta.level,
+    scope_decision: "global",
+  };
 }
 
 function mutationFieldHints(toolName: string): string[] {
   if (DANGEROUS_ALWAYS.has(toolName)) return ["approval"];
   if (SCOPED_CAPABLE.has(toolName)) {
-    return [`${PROJECT_FIELD[toolName]}="hermes"`, "validation_id", "validation_evidence{commit,build_passed:true}", "approval"];
+    return [
+      `${PROJECT_FIELD[toolName]}="hermes"`,
+      "validation_id",
+      "validation_evidence{commit,build_passed:true}",
+      "approval",
+    ];
   }
   return ["approval"];
 }

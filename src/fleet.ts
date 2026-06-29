@@ -28,10 +28,12 @@ const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
 
 function isLoopbackHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
-  return normalized === "localhost"
-    || normalized === "127.0.0.1"
-    || normalized === "::1"
-    || normalized === "[::1]";
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  );
 }
 
 function normalizeBaseUrl(raw: string): string | null {
@@ -115,8 +117,10 @@ function parseRpcEnvelope(raw: string): RpcEnvelope {
   }
 
   for (const envelope of envelopes) {
-    if (Object.prototype.hasOwnProperty.call(envelope, "result")
-      || Object.prototype.hasOwnProperty.call(envelope, "error")) {
+    if (
+      Object.prototype.hasOwnProperty.call(envelope, "result") ||
+      Object.prototype.hasOwnProperty.call(envelope, "error")
+    ) {
       return envelope;
     }
   }
@@ -145,7 +149,9 @@ function unwrapToolResult(result: unknown): unknown {
   if (Array.isArray(content)) {
     const textChunks = content
       .map((entry) => asRecord(entry))
-      .filter((entry) => entry.type === "text" && typeof entry.text === "string")
+      .filter(
+        (entry) => entry.type === "text" && typeof entry.text === "string",
+      )
       .map((entry) => String(entry.text).trim())
       .filter((entry) => entry.length > 0);
 
@@ -200,8 +206,10 @@ export class FleetClient {
     params: Record<string, unknown>,
     options?: { includeSession?: boolean; notification?: boolean },
   ): Promise<{ result: unknown; sessionId: string | null }> {
-    if (!this.endpoint) throw new Error("Fleet MCP endpoint is not configured.");
-    if (!this.authToken.trim()) throw new Error("Fleet MCP auth token is not configured.");
+    if (!this.endpoint)
+      throw new Error("Fleet MCP endpoint is not configured.");
+    if (!this.authToken.trim())
+      throw new Error("Fleet MCP auth token is not configured.");
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
@@ -240,7 +248,11 @@ export class FleetClient {
         });
 
         const location = response.headers.get("location");
-        if (REDIRECT_STATUS_CODES.has(response.status) && typeof location === "string" && location.trim().length > 0) {
+        if (
+          REDIRECT_STATUS_CODES.has(response.status) &&
+          typeof location === "string" &&
+          location.trim().length > 0
+        ) {
           redirects += 1;
           if (redirects > 5) {
             throw new Error(`Fleet MCP redirect limit exceeded for ${method}.`);
@@ -251,12 +263,17 @@ export class FleetClient {
 
         const raw = await response.text();
         if (!response.ok) {
-          throw new Error(`Fleet MCP HTTP ${response.status}: ${redactSecrets(raw.slice(0, 500))}`);
+          throw new Error(
+            `Fleet MCP HTTP ${response.status}: ${redactSecrets(
+              raw.slice(0, 500),
+            )}`,
+          );
         }
 
-        const responseSessionId = response.headers.get("mcp-session-id")?.trim()
-          ?? response.headers.get("Mcp-Session-Id")?.trim()
-          ?? null;
+        const responseSessionId =
+          response.headers.get("mcp-session-id")?.trim() ??
+          response.headers.get("Mcp-Session-Id")?.trim() ??
+          null;
 
         if (!raw.trim()) {
           return { result: null, sessionId: responseSessionId };
@@ -265,14 +282,20 @@ export class FleetClient {
         const envelope = parseRpcEnvelope(raw);
         if (envelope.error) {
           const err = envelope.error;
-          const message = redactSecrets(String(err.message ?? "unknown fleet error"));
-          throw new Error(`Fleet MCP RPC error (${err.code ?? "unknown"}): ${message}`);
+          const message = redactSecrets(
+            String(err.message ?? "unknown fleet error"),
+          );
+          throw new Error(
+            `Fleet MCP RPC error (${err.code ?? "unknown"}): ${message}`,
+          );
         }
         return { result: envelope.result, sessionId: responseSessionId };
       }
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`Fleet MCP request timed out after ${this.requestTimeoutMs}ms.`);
+        throw new Error(
+          `Fleet MCP request timed out after ${this.requestTimeoutMs}ms.`,
+        );
       }
       throw error;
     } finally {
@@ -289,12 +312,17 @@ export class FleetClient {
    */
   private shouldResetSession(error: unknown): boolean {
     if (!this.sessionId) return false;
-    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-    return message.includes("http 400")
-      || message.includes("http 404")
-      || message.includes("http 409")
-      || message.includes("session")
-      || message.includes("mcp-session-id");
+    const message =
+      error instanceof Error
+        ? error.message.toLowerCase()
+        : String(error).toLowerCase();
+    return (
+      message.includes("http 400") ||
+      message.includes("http 404") ||
+      message.includes("http 409") ||
+      message.includes("session") ||
+      message.includes("mcp-session-id")
+    );
   }
 
   private async initializeSession(): Promise<void> {
@@ -331,12 +359,18 @@ export class FleetClient {
       { includeSession: true, notification: true },
     );
 
-    const toolsList = await this.rpcCall("tools/list", {}, { includeSession: true });
+    const toolsList = await this.rpcCall(
+      "tools/list",
+      {},
+      { includeSession: true },
+    );
     const tools = asArray(asRecord(toolsList.result).tools);
     this.availableTools = new Set<string>(
       tools
         .map((tool) => asRecord(tool).name)
-        .filter((name): name is string => typeof name === "string" && name.length > 0),
+        .filter(
+          (name): name is string => typeof name === "string" && name.length > 0,
+        ),
     );
 
     this.sessionInitialized = true;
@@ -360,16 +394,26 @@ export class FleetClient {
     }
   }
 
-  async callTool<T = unknown>(name: string, args: Record<string, unknown>): Promise<T> {
+  async callTool<T = unknown>(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
     await this.ensureSession();
 
     if (this.availableTools && !this.availableTools.has(name)) {
-      const refresh = await this.rpcCall("tools/list", {}, { includeSession: true });
+      const refresh = await this.rpcCall(
+        "tools/list",
+        {},
+        { includeSession: true },
+      );
       const tools = asArray(asRecord(refresh.result).tools);
       this.availableTools = new Set<string>(
         tools
           .map((tool) => asRecord(tool).name)
-          .filter((toolName): toolName is string => typeof toolName === "string" && toolName.length > 0),
+          .filter(
+            (toolName): toolName is string =>
+              typeof toolName === "string" && toolName.length > 0,
+          ),
       );
     }
 
@@ -395,20 +439,46 @@ export class FleetClient {
     }
   }
 
-  async registerAgent(args: { name: string; kind: "variable" | "deterministic"; deploy_target?: string; version?: string }) {
-    return this.callTool<Record<string, unknown>>("register_agent", args as unknown as Record<string, unknown>);
+  async registerAgent(args: {
+    name: string;
+    kind: "variable" | "deterministic";
+    deploy_target?: string;
+    version?: string;
+  }) {
+    return this.callTool<Record<string, unknown>>(
+      "register_agent",
+      args as unknown as Record<string, unknown>,
+    );
   }
 
   async heartbeat(agentName: string, status: unknown) {
-    return this.callTool<Record<string, unknown>>("heartbeat", { agent_name: agentName, status: asRecord(status) });
+    return this.callTool<Record<string, unknown>>("heartbeat", {
+      agent_name: agentName,
+      status: asRecord(status),
+    });
   }
 
-  async recordRunStart(args: { agent_name: string; kind: string; intent?: string; parent_run_id?: string }) {
-    return this.callTool<Record<string, unknown>>("record_run_start", args as unknown as Record<string, unknown>);
+  async recordRunStart(args: {
+    agent_name: string;
+    kind: string;
+    intent?: string;
+    parent_run_id?: string;
+  }) {
+    return this.callTool<Record<string, unknown>>(
+      "record_run_start",
+      args as unknown as Record<string, unknown>,
+    );
   }
 
-  async recordRunEnd(args: { run_id: string; status: "success" | "error" | "cancelled"; summary?: Record<string, unknown> }) {
-    return this.callTool<Record<string, unknown>>("record_run_end", args as unknown as Record<string, unknown>);
+  async recordRunEnd(args: {
+    run_id: string;
+    status: "success" | "error" | "cancelled";
+    summary?: Record<string, unknown>;
+  }) {
+    return this.callTool<Record<string, unknown>>(
+      "record_run_end",
+      args as unknown as Record<string, unknown>,
+    );
   }
 
   async recordEvent(args: {
@@ -418,7 +488,10 @@ export class FleetClient {
     run_id?: string;
     level?: string;
   }) {
-    return this.callTool<Record<string, unknown>>("record_event", args as unknown as Record<string, unknown>);
+    return this.callTool<Record<string, unknown>>(
+      "record_event",
+      args as unknown as Record<string, unknown>,
+    );
   }
 
   async recordArtifactContent(args: {
@@ -432,7 +505,10 @@ export class FleetClient {
     meta?: Record<string, unknown>;
     send_blocking?: boolean;
   }) {
-    return this.callTool<Record<string, unknown>>("record_artifact_content", args as unknown as Record<string, unknown>);
+    return this.callTool<Record<string, unknown>>(
+      "record_artifact_content",
+      args as unknown as Record<string, unknown>,
+    );
   }
 
   async getRun(runId: string) {
@@ -445,7 +521,10 @@ export class FleetClient {
     payload?: Record<string, unknown>;
     source_agent?: string;
   }) {
-    return this.callTool<Record<string, unknown>>("signal_intent", args as unknown as Record<string, unknown>);
+    return this.callTool<Record<string, unknown>>(
+      "signal_intent",
+      args as unknown as Record<string, unknown>,
+    );
   }
 
   async consumeOpenIntents(agentName: string, limit = 10) {
@@ -468,14 +547,21 @@ export class FleetClient {
     dedup_key?: string;
     ttl_seconds?: number;
   }) {
-    return this.callTool<Record<string, unknown>>("queue_local_task", args as unknown as Record<string, unknown>);
+    return this.callTool<Record<string, unknown>>(
+      "queue_local_task",
+      args as unknown as Record<string, unknown>,
+    );
   }
 
   async getLocalTask(taskId: string) {
-    return this.callTool<Record<string, unknown> | null>("get_local_task", { task_id: taskId });
+    return this.callTool<Record<string, unknown> | null>("get_local_task", {
+      task_id: taskId,
+    });
   }
 
-  async listLocalTasks(args: { status?: string; kind?: string; limit?: number } = {}) {
+  async listLocalTasks(
+    args: { status?: string; kind?: string; limit?: number } = {},
+  ) {
     const payload: Record<string, unknown> = {};
     if (typeof args.status === "string") payload.status = args.status;
     if (typeof args.kind === "string") payload.kind = args.kind;
@@ -495,6 +581,9 @@ export class FleetClient {
     repo?: string;
     move_id?: number;
   }) {
-    return this.callTool<Record<string, unknown>>("request_capability", args as unknown as Record<string, unknown>);
+    return this.callTool<Record<string, unknown>>(
+      "request_capability",
+      args as unknown as Record<string, unknown>,
+    );
   }
 }

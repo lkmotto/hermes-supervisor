@@ -12,7 +12,10 @@ declare module "sql.js" {
     interface Database {
       run(sql: string, params?: unknown[]): Database;
       prepare(sql: string, params?: unknown[]): Statement;
-      exec(sql: string, params?: unknown[]): Array<{ columns: string[]; values: unknown[][] }>;
+      exec(
+        sql: string,
+        params?: unknown[],
+      ): Array<{ columns: string[]; values: unknown[][] }>;
       export(): Uint8Array;
       close(): void;
     }
@@ -26,7 +29,9 @@ declare module "sql.js" {
     }
   }
 
-  function initSqlJs(config?: initSqlJs.InitSqlJsConfig): Promise<initSqlJs.SqlJsStatic>;
+  function initSqlJs(
+    config?: initSqlJs.InitSqlJsConfig,
+  ): Promise<initSqlJs.SqlJsStatic>;
 
   export = initSqlJs;
 }

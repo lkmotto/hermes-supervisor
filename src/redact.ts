@@ -22,15 +22,39 @@ const SECRET_ENV_NAMES = [
 // (e.g. credentials pasted into memory/plan content) so they never persist
 // or surface in raw form. Ordering is not significant; all are applied.
 const SECRET_PATTERNS: { re: RegExp; replacement: string }[] = [
-  { re: /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----/g, replacement: "[REDACTED:private-key]" },
+  {
+    re: /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----/g,
+    replacement: "[REDACTED:private-key]",
+  },
   { re: /\bAKIA[0-9A-Z]{16}\b/g, replacement: "[REDACTED:aws-access-key]" },
-  { re: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b/g, replacement: "[REDACTED:provider-key]" },
-  { re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g, replacement: "[REDACTED:secret-key]" },
-  { re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, replacement: "[REDACTED:github-token]" },
-  { re: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, replacement: "[REDACTED:github-pat]" },
-  { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, replacement: "[REDACTED:slack-token]" },
-  { re: /\bAIza[0-9A-Za-z_-]{35}\b/g, replacement: "[REDACTED:google-api-key]" },
-  { re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, replacement: "[REDACTED:jwt]" },
+  {
+    re: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b/g,
+    replacement: "[REDACTED:provider-key]",
+  },
+  {
+    re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g,
+    replacement: "[REDACTED:secret-key]",
+  },
+  {
+    re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+    replacement: "[REDACTED:github-token]",
+  },
+  {
+    re: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+    replacement: "[REDACTED:github-pat]",
+  },
+  {
+    re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+    replacement: "[REDACTED:slack-token]",
+  },
+  {
+    re: /\bAIza[0-9A-Za-z_-]{35}\b/g,
+    replacement: "[REDACTED:google-api-key]",
+  },
+  {
+    re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+    replacement: "[REDACTED:jwt]",
+  },
   // Labeled secret assignments in JSON/env/prose: key: "value" | key=value.
   // The value (group 2) is replaced while the key + separator (group 1) is kept.
   {
@@ -63,9 +87,15 @@ export function redactSecrets(input: string): string {
     }
   }
   // Bearer tokens.
-  result = result.replace(/(Bearer\s+)[A-Za-z0-9._~+/=\-]{8,}/gi, "$1[REDACTED]");
+  result = result.replace(
+    /(Bearer\s+)[A-Za-z0-9._~+/=\-]{8,}/gi,
+    "$1[REDACTED]",
+  );
   // Credentials embedded in URLs (*************************
-  result = result.replace(/(\/\/)[^/:@\s]+:[^@/\s]+@/g, "$1[REDACTED]:[REDACTED]@");
+  result = result.replace(
+    /(\/\/)[^/:@\s]+:[^@/\s]+@/g,
+    "$1[REDACTED]:[REDACTED]@",
+  );
   // Common credential formats and labeled secret assignments.
   for (const { re, replacement } of SECRET_PATTERNS) {
     result = result.replace(re, replacement);
@@ -86,12 +116,15 @@ const SENSITIVE_KEY_RE =
 // value safe to JSON.stringify.
 export function redactMetadata(value: unknown, sensitiveKey = false): unknown {
   if (typeof value === "string") {
-    return sensitiveKey && value.length > 0 ? "[REDACTED]" : redactSecrets(value);
+    return sensitiveKey && value.length > 0
+      ? "[REDACTED]"
+      : redactSecrets(value);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return sensitiveKey ? "[REDACTED]" : value;
   }
-  if (Array.isArray(value)) return value.map((v) => redactMetadata(v, sensitiveKey));
+  if (Array.isArray(value))
+    return value.map((v) => redactMetadata(v, sensitiveKey));
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {

@@ -38,7 +38,9 @@ function messageText(content: unknown): string {
       .map((part) => {
         if (typeof part === "string") return part;
         const rec = asRecord(part);
-        return asOptionalString(rec.text) ?? asOptionalString(rec.content) ?? "";
+        return (
+          asOptionalString(rec.text) ?? asOptionalString(rec.content) ?? ""
+        );
       })
       .filter((part) => part.length > 0)
       .join("\n")
@@ -93,7 +95,9 @@ export interface AssistantMessageSnapshot {
   created_at_ms: number | null;
 }
 
-export function latestAssistantMessageSnapshot(messages: unknown[]): AssistantMessageSnapshot {
+export function latestAssistantMessageSnapshot(
+  messages: unknown[],
+): AssistantMessageSnapshot {
   const candidates: Array<{
     index: number;
     fullText: string;
@@ -110,7 +114,10 @@ export function latestAssistantMessageSnapshot(messages: unknown[]): AssistantMe
     candidates.push({
       index: i,
       fullText: text,
-      messageId: asOptionalString(msg.id) ?? asOptionalString(msg.messageId) ?? asOptionalString(msg.message_id),
+      messageId:
+        asOptionalString(msg.id) ??
+        asOptionalString(msg.messageId) ??
+        asOptionalString(msg.message_id),
       createdAtMs: messageTimestampMs(msg),
     });
   }
@@ -139,7 +146,10 @@ export function latestAssistantMessageSnapshot(messages: unknown[]): AssistantMe
     summary: selected.fullText.slice(0, 600),
     full_text: selected.fullText,
     message_id: selected.messageId,
-    created_at: selected.createdAtMs !== null ? new Date(selected.createdAtMs).toISOString() : null,
+    created_at:
+      selected.createdAtMs !== null
+        ? new Date(selected.createdAtMs).toISOString()
+        : null,
     created_at_ms: selected.createdAtMs,
   };
 }
@@ -167,9 +177,7 @@ export function extractConfidenceScore(text: string | null): number | null {
     const rawValue = Number(match[1]);
     if (!Number.isFinite(rawValue)) continue;
     const hasPercent = (match[2] ?? "").toLowerCase().includes("percent");
-    const normalized = hasPercent || rawValue > 1
-      ? rawValue / 100
-      : rawValue;
+    const normalized = hasPercent || rawValue > 1 ? rawValue / 100 : rawValue;
     if (normalized >= 0 && normalized <= 1) return normalized;
   }
   return null;

@@ -12,26 +12,61 @@ const RAW_FACTORY_API_BASE = firstNonEmpty(
   process.env.FACTORY_MCP_API_BASE,
   "https://api.factory.ai",
 );
-const FACTORY_API_PATH_PREFIX = firstNonEmpty(process.env.FACTORY_API_PATH_PREFIX, "/api/v0");
-const FACTORY_API_BASE = normalizeFactoryApiBase(RAW_FACTORY_API_BASE, FACTORY_API_PATH_PREFIX);
-const FACTORY_MCP_URL = firstNonEmpty(process.env.FACTORY_MCP_URL, process.env.FACTORY_CONNECTOR_MCP_URL, "");
+const FACTORY_API_PATH_PREFIX = firstNonEmpty(
+  process.env.FACTORY_API_PATH_PREFIX,
+  "/api/v0",
+);
+const FACTORY_API_BASE = normalizeFactoryApiBase(
+  RAW_FACTORY_API_BASE,
+  FACTORY_API_PATH_PREFIX,
+);
+const FACTORY_MCP_URL = firstNonEmpty(
+  process.env.FACTORY_MCP_URL,
+  process.env.FACTORY_CONNECTOR_MCP_URL,
+  "",
+);
 const FACTORY_API_KEY = (process.env.FACTORY_API_KEY ?? "").trim();
 const FACTORY_MCP_API_KEY =
-  process.env.FACTORY_MCP_API_KEY?.trim()
-  || process.env.FACTORY_MCP_AUTH_TOKEN?.trim()
-  || FACTORY_API_KEY;
-const FACTORY_API_KEY_HEADER = firstNonEmpty(process.env.FACTORY_API_KEY_HEADER, "Authorization");
+  process.env.FACTORY_MCP_API_KEY?.trim() ||
+  process.env.FACTORY_MCP_AUTH_TOKEN?.trim() ||
+  FACTORY_API_KEY;
+const FACTORY_API_KEY_HEADER = firstNonEmpty(
+  process.env.FACTORY_API_KEY_HEADER,
+  "Authorization",
+);
 const FACTORY_API_KEY_PREFIX =
-  process.env.FACTORY_API_KEY_PREFIX && process.env.FACTORY_API_KEY_PREFIX.length > 0
+  process.env.FACTORY_API_KEY_PREFIX &&
+  process.env.FACTORY_API_KEY_PREFIX.length > 0
     ? process.env.FACTORY_API_KEY_PREFIX
     : "Bearer ";
-const FACTORY_SESSION_BACKEND = firstNonEmpty(process.env.FACTORY_SESSION_BACKEND, "auto").toLowerCase();
-const FACTORY_MCP_PROTOCOL_VERSION = firstNonEmpty(process.env.FACTORY_MCP_PROTOCOL_VERSION, "2025-06-18");
-const FACTORY_MCP_LIST_SESSIONS_TOOL = firstNonEmpty(process.env.FACTORY_MCP_LIST_SESSIONS_TOOL, "list_sessions");
-const FACTORY_MCP_GET_SESSION_TOOL = firstNonEmpty(process.env.FACTORY_MCP_GET_SESSION_TOOL, "get_session");
-const FACTORY_MCP_GET_SESSION_MESSAGES_TOOL = firstNonEmpty(process.env.FACTORY_MCP_GET_SESSION_MESSAGES_TOOL, "get_session_messages");
-const FACTORY_MCP_POST_MESSAGE_TOOL = firstNonEmpty(process.env.FACTORY_MCP_POST_MESSAGE_TOOL, "add_session_message");
-const FACTORY_MCP_CREATE_MISSION_TOOL = firstNonEmpty(process.env.FACTORY_MCP_CREATE_MISSION_TOOL, "create_mission");
+const FACTORY_SESSION_BACKEND = firstNonEmpty(
+  process.env.FACTORY_SESSION_BACKEND,
+  "auto",
+).toLowerCase();
+const FACTORY_MCP_PROTOCOL_VERSION = firstNonEmpty(
+  process.env.FACTORY_MCP_PROTOCOL_VERSION,
+  "2025-06-18",
+);
+const FACTORY_MCP_LIST_SESSIONS_TOOL = firstNonEmpty(
+  process.env.FACTORY_MCP_LIST_SESSIONS_TOOL,
+  "list_sessions",
+);
+const FACTORY_MCP_GET_SESSION_TOOL = firstNonEmpty(
+  process.env.FACTORY_MCP_GET_SESSION_TOOL,
+  "get_session",
+);
+const FACTORY_MCP_GET_SESSION_MESSAGES_TOOL = firstNonEmpty(
+  process.env.FACTORY_MCP_GET_SESSION_MESSAGES_TOOL,
+  "get_session_messages",
+);
+const FACTORY_MCP_POST_MESSAGE_TOOL = firstNonEmpty(
+  process.env.FACTORY_MCP_POST_MESSAGE_TOOL,
+  "add_session_message",
+);
+const FACTORY_MCP_CREATE_MISSION_TOOL = firstNonEmpty(
+  process.env.FACTORY_MCP_CREATE_MISSION_TOOL,
+  "create_mission",
+);
 
 let factoryMcpSessionId: string | null = null;
 
@@ -107,9 +142,10 @@ interface FactoryRpcEnvelope {
 
 function normalizeFactoryApiBase(raw: string, pathPrefix: string): string {
   const trimmed = raw.trim().replace(/\/+$/g, "");
-  const normalizedPrefix = pathPrefix.trim().length === 0
-    ? ""
-    : `/${pathPrefix.trim().replace(/^\/+|\/+$/g, "")}`;
+  const normalizedPrefix =
+    pathPrefix.trim().length === 0
+      ? ""
+      : `/${pathPrefix.trim().replace(/^\/+|\/+$/g, "")}`;
   if (!trimmed) return `https://api.factory.ai${normalizedPrefix}`;
 
   let pathname = "";
@@ -119,7 +155,11 @@ function normalizeFactoryApiBase(raw: string, pathPrefix: string): string {
     pathname = "";
   }
 
-  if (/\/api\/|\/mcp(?:\/|$)|\/sessions(?:\/|$)|\/missions(?:\/|$)/i.test(pathname)) {
+  if (
+    /\/api\/|\/mcp(?:\/|$)|\/sessions(?:\/|$)|\/missions(?:\/|$)/i.test(
+      pathname,
+    )
+  ) {
     return trimmed;
   }
   return `${trimmed}${normalizedPrefix}`;
@@ -129,9 +169,8 @@ function buildAuthHeaders(token: string) {
   if (!token) return {};
   const headerName = FACTORY_API_KEY_HEADER.trim() || "Authorization";
   const prefix = FACTORY_API_KEY_PREFIX;
-  const headerValue = headerName.toLowerCase() === "authorization"
-    ? `${prefix}${token}`
-    : token;
+  const headerValue =
+    headerName.toLowerCase() === "authorization" ? `${prefix}${token}` : token;
   return { [headerName]: headerValue };
 }
 
@@ -184,7 +223,10 @@ function backendUsesMcp(): boolean {
   return FACTORY_MCP_URL.length > 0;
 }
 
-async function factoryRequest<T>(path: string, options?: RequestInit): Promise<T> {
+async function factoryRequest<T>(
+  path: string,
+  options?: RequestInit,
+): Promise<T> {
   if (!FACTORY_API_KEY) {
     throw new Error("FACTORY_API_KEY is not configured");
   }
@@ -200,14 +242,20 @@ async function factoryRequest<T>(path: string, options?: RequestInit): Promise<T
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Factory API ${res.status} (${path}): ${body.slice(0, 500)}`);
+    throw new Error(
+      `Factory API ${res.status} (${path}): ${body.slice(0, 500)}`,
+    );
   }
   return res.json() as Promise<T>;
 }
 
-async function factoryMcpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+async function factoryMcpRequest(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
   if (!FACTORY_MCP_URL) throw new Error("FACTORY_MCP_URL is not configured");
-  if (!FACTORY_MCP_API_KEY) throw new Error("FACTORY_MCP_API_KEY is not configured");
+  if (!FACTORY_MCP_API_KEY)
+    throw new Error("FACTORY_MCP_API_KEY is not configured");
 
   const headers: Record<string, string> = {
     ...buildAuthHeaders(FACTORY_MCP_API_KEY),
@@ -218,7 +266,9 @@ async function factoryMcpRequest(method: string, params: Record<string, unknown>
     headers["mcp-session-id"] = factoryMcpSessionId;
   }
 
-  const rpcId = `factory-${method}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const rpcId = `factory-${method}-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
   const res = await fetch(FACTORY_MCP_URL, {
     method: "POST",
     headers,
@@ -231,7 +281,9 @@ async function factoryMcpRequest(method: string, params: Record<string, unknown>
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Factory MCP ${res.status} (${method}): ${body.slice(0, 500)}`);
+    throw new Error(
+      `Factory MCP ${res.status} (${method}): ${body.slice(0, 500)}`,
+    );
   }
 
   const sessionIdHeader = res.headers.get("mcp-session-id");
@@ -242,7 +294,9 @@ async function factoryMcpRequest(method: string, params: Record<string, unknown>
   const envelope = parseRpcEnvelope(await res.text());
   if (envelope.error) {
     throw new Error(
-      `Factory MCP error (${method}): ${envelope.error.message ?? "unknown"}${envelope.error.code ? ` [${envelope.error.code}]` : ""}`,
+      `Factory MCP error (${method}): ${envelope.error.message ?? "unknown"}${
+        envelope.error.code ? ` [${envelope.error.code}]` : ""
+      }`,
     );
   }
   return envelope.result;
@@ -278,9 +332,15 @@ function extractMcpToolPayload(result: unknown): unknown {
   return result;
 }
 
-async function factoryMcpCallTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+async function factoryMcpCallTool(
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
   await ensureFactoryMcpSession();
-  const result = await factoryMcpRequest("tools/call", { name: toolName, arguments: args });
+  const result = await factoryMcpRequest("tools/call", {
+    name: toolName,
+    arguments: args,
+  });
   return extractMcpToolPayload(result);
 }
 
@@ -316,36 +376,50 @@ function normalizeComputersPayload(payload: unknown): FactoryComputer[] {
   return [];
 }
 
-function normalizePostMessagePayload(payload: unknown): FactoryPostMessageResult {
+function normalizePostMessagePayload(
+  payload: unknown,
+): FactoryPostMessageResult {
   const rec = asRecord(payload);
-  const messageId = asOptionalString(rec.messageId) ?? asOptionalString(rec.message_id) ?? "";
-  const status = (asOptionalString(rec.status) ?? "pending") as FactoryPostMessageResult["status"];
-  if (!messageId) throw new Error("Factory post-message payload is missing messageId");
+  const messageId =
+    asOptionalString(rec.messageId) ?? asOptionalString(rec.message_id) ?? "";
+  const status = (asOptionalString(rec.status) ??
+    "pending") as FactoryPostMessageResult["status"];
+  if (!messageId)
+    throw new Error("Factory post-message payload is missing messageId");
   return { messageId, status };
 }
 
 function normalizeMissionPayload(payload: unknown): FactoryMission {
   const rec = asRecord(payload);
-  const mission = (rec.mission && typeof rec.mission === "object") ? asRecord(rec.mission) : rec;
+  const mission =
+    rec.mission && typeof rec.mission === "object"
+      ? asRecord(rec.mission)
+      : rec;
   return mission as unknown as FactoryMission;
 }
 
 export async function listSessions(limit = 10): Promise<FactorySession[]> {
   if (backendUsesMcp()) {
     try {
-      const payload = await factoryMcpCallTool(FACTORY_MCP_LIST_SESSIONS_TOOL, { limit });
+      const payload = await factoryMcpCallTool(FACTORY_MCP_LIST_SESSIONS_TOOL, {
+        limit,
+      });
       return normalizeSessionsPayload(payload);
     } catch (error) {
       if (FACTORY_SESSION_BACKEND === "mcp") throw error;
     }
   }
-  const result = await factoryRequest<{ sessions?: FactorySession[] }>(`/sessions?limit=${limit}`);
+  const result = await factoryRequest<{ sessions?: FactorySession[] }>(
+    `/sessions?limit=${limit}`,
+  );
   return result.sessions ?? [];
 }
 
 export async function listComputers(limit = 20): Promise<FactoryComputer[]> {
   const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
-  const result = await factoryRequest<{ computers?: FactoryComputer[] }>(`/computers?limit=${boundedLimit}`);
+  const result = await factoryRequest<{ computers?: FactoryComputer[] }>(
+    `/computers?limit=${boundedLimit}`,
+  );
   return normalizeComputersPayload(result);
 }
 
@@ -364,38 +438,54 @@ export async function getSession(sessionId: string): Promise<FactorySession> {
   return factoryRequest<FactorySession>(`/sessions/${sessionId}`);
 }
 
-export async function getSessionMessages(sessionId: string, limit = 50): Promise<FactoryMessage[]> {
+export async function getSessionMessages(
+  sessionId: string,
+  limit = 50,
+): Promise<FactoryMessage[]> {
   if (backendUsesMcp()) {
     try {
-      const payload = await factoryMcpCallTool(FACTORY_MCP_GET_SESSION_MESSAGES_TOOL, {
-        session_id: sessionId,
-        sessionId,
-        limit,
-        message_limit: limit,
-      });
+      const payload = await factoryMcpCallTool(
+        FACTORY_MCP_GET_SESSION_MESSAGES_TOOL,
+        {
+          session_id: sessionId,
+          sessionId,
+          limit,
+          message_limit: limit,
+        },
+      );
       return normalizeMessagesPayload(payload);
     } catch (error) {
       if (FACTORY_SESSION_BACKEND === "mcp") throw error;
     }
   }
-  const result = await factoryRequest<{ messages?: FactoryMessage[] }>(`/sessions/${sessionId}/messages?limit=${limit}`);
+  const result = await factoryRequest<{ messages?: FactoryMessage[] }>(
+    `/sessions/${sessionId}/messages?limit=${limit}`,
+  );
   return result.messages ?? [];
 }
 
-export async function createSession(input: FactoryCreateSessionInput): Promise<FactorySession> {
+export async function createSession(
+  input: FactoryCreateSessionInput,
+): Promise<FactorySession> {
   const payload: Record<string, unknown> = {
     computerId: input.computerId,
     ...(input.cwd ? { cwd: input.cwd } : {}),
-    ...(input.sessionSettings ? { sessionSettings: input.sessionSettings } : {}),
+    ...(input.sessionSettings
+      ? { sessionSettings: input.sessionSettings }
+      : {}),
   };
-  const result = await factoryRequest<FactorySession | { session?: FactorySession }>("/sessions", {
+  const result = await factoryRequest<
+    FactorySession | { session?: FactorySession }
+  >("/sessions", {
     method: "POST",
     body: JSON.stringify(payload),
   });
   return normalizeSessionPayload(result);
 }
 
-export async function createMission(input: FactoryCreateMissionInput): Promise<FactoryMission> {
+export async function createMission(
+  input: FactoryCreateMissionInput,
+): Promise<FactoryMission> {
   if (backendUsesMcp()) {
     try {
       const missionArgs: Record<string, unknown> = {
@@ -404,7 +494,10 @@ export async function createMission(input: FactoryCreateMissionInput): Promise<F
         ...(input.repository ? { repository: input.repository } : {}),
         ...(input.branch ? { branch: input.branch } : {}),
       };
-      const payload = await factoryMcpCallTool(FACTORY_MCP_CREATE_MISSION_TOOL, missionArgs);
+      const payload = await factoryMcpCallTool(
+        FACTORY_MCP_CREATE_MISSION_TOOL,
+        missionArgs,
+      );
       return normalizeMissionPayload(payload);
     } catch (error) {
       if (FACTORY_SESSION_BACKEND === "mcp") throw error;
@@ -435,11 +528,14 @@ export async function addSessionMessage(
     }
   }
 
-  return factoryRequest<FactoryPostMessageResult>(`/sessions/${sessionId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({
-      text: input.text,
-      ...(input.computerId ? { computerId: input.computerId } : {}),
-    }),
-  });
+  return factoryRequest<FactoryPostMessageResult>(
+    `/sessions/${sessionId}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        text: input.text,
+        ...(input.computerId ? { computerId: input.computerId } : {}),
+      }),
+    },
+  );
 }

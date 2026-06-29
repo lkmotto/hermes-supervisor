@@ -1,9 +1,26 @@
 import { randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { dirname, resolve } from "node:path";
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -132,7 +149,10 @@ class FleetStateStore {
   private readonly artifacts = new Map<number, FleetArtifactRecord>();
   private readonly intents = new Map<string, FleetIntentRecord>();
   private readonly localTasks = new Map<string, FleetLocalTaskRecord>();
-  private readonly capabilityRequests = new Map<string, FleetCapabilityRequestRecord>();
+  private readonly capabilityRequests = new Map<
+    string,
+    FleetCapabilityRequestRecord
+  >();
   private counters = {
     run: 0,
     event: 0,
@@ -166,7 +186,8 @@ class FleetStateStore {
       last_status: null,
     };
     record.kind = args.kind || record.kind || "variable";
-    record.deploy_target = asOptionalString(args.deploy_target) ?? record.deploy_target;
+    record.deploy_target =
+      asOptionalString(args.deploy_target) ?? record.deploy_target;
     record.version = asOptionalString(args.version) ?? record.version;
     this.agents.set(record.name, record);
     this.persist();
@@ -202,7 +223,12 @@ class FleetStateStore {
     };
   }
 
-  recordRunStart(args: { agent_name: string; kind: string; intent?: string; parent_run_id?: string }) {
+  recordRunStart(args: {
+    agent_name: string;
+    kind: string;
+    intent?: string;
+    parent_run_id?: string;
+  }) {
     this.counters.run += 1;
     const runId = `run-${String(this.counters.run).padStart(6, "0")}`;
     const run: FleetRunRecord = {
@@ -227,7 +253,11 @@ class FleetStateStore {
     };
   }
 
-  recordRunEnd(args: { run_id: string; status: "success" | "error" | "cancelled"; summary?: unknown }) {
+  recordRunEnd(args: {
+    run_id: string;
+    status: "success" | "error" | "cancelled";
+    summary?: unknown;
+  }) {
     const run = this.runs.get(args.run_id.trim());
     if (!run) {
       throw rpcError(-32004, `Unknown run_id: ${args.run_id}`);
@@ -362,9 +392,15 @@ class FleetStateStore {
 
   consumeOpenIntents(args: { agent_name: string; limit?: number }) {
     const agentName = args.agent_name.trim();
-    const limit = Math.max(1, Math.trunc(Number.isFinite(args.limit) ? Number(args.limit) : 10));
+    const limit = Math.max(
+      1,
+      Math.trunc(Number.isFinite(args.limit) ? Number(args.limit) : 10),
+    );
     const openIntents = Array.from(this.intents.values())
-      .filter((intent) => intent.status === "open" && intent.target_agent === agentName)
+      .filter(
+        (intent) =>
+          intent.status === "open" && intent.target_agent === agentName,
+      )
       .slice(0, limit);
     const now = nowIso();
     for (const intent of openIntents) {
@@ -393,7 +429,9 @@ class FleetStateStore {
   }) {
     const dedupKey = asOptionalString(args.dedup_key);
     if (dedupKey) {
-      const existing = Array.from(this.localTasks.values()).find((task) => task.dedup_key === dedupKey && task.status === "queued");
+      const existing = Array.from(this.localTasks.values()).find(
+        (task) => task.dedup_key === dedupKey && task.status === "queued",
+      );
       if (existing) {
         return {
           task_id: existing.id,
@@ -440,9 +478,13 @@ class FleetStateStore {
   listLocalTasks(args: { status?: string; kind?: string; limit?: number }) {
     const status = asOptionalString(args.status)?.toLowerCase();
     const kind = asOptionalString(args.kind);
-    const limit = Math.max(1, Math.trunc(Number.isFinite(args.limit) ? Number(args.limit) : 50));
+    const limit = Math.max(
+      1,
+      Math.trunc(Number.isFinite(args.limit) ? Number(args.limit) : 50),
+    );
     let tasks = Array.from(this.localTasks.values());
-    if (status) tasks = tasks.filter((task) => task.status.toLowerCase() === status);
+    if (status)
+      tasks = tasks.filter((task) => task.status.toLowerCase() === status);
     if (kind) tasks = tasks.filter((task) => task.kind === kind);
     tasks = tasks.slice(0, limit);
     return tasks.map((task) => ({
@@ -463,8 +505,9 @@ class FleetStateStore {
     move_id?: number;
   }) {
     const blockerKey = `${args.capability.trim()}::${args.justification.trim()}`;
-    const existing = Array.from(this.capabilityRequests.values())
-      .find((request) => request.blocker_key === blockerKey);
+    const existing = Array.from(this.capabilityRequests.values()).find(
+      (request) => request.blocker_key === blockerKey,
+    );
     if (existing) {
       return {
         id: existing.request_id,
@@ -475,7 +518,10 @@ class FleetStateStore {
       };
     }
     this.counters.capability += 1;
-    const requestId = `cap-${String(this.counters.capability).padStart(6, "0")}`;
+    const requestId = `cap-${String(this.counters.capability).padStart(
+      6,
+      "0",
+    )}`;
     const request: FleetCapabilityRequestRecord = {
       request_id: requestId,
       capability: args.capability.trim(),
@@ -501,7 +547,9 @@ class FleetStateStore {
   private load() {
     if (!existsSync(this.statePath)) return;
     try {
-      const parsed = JSON.parse(readFileSync(this.statePath, "utf8")) as Partial<FleetStateSnapshot>;
+      const parsed = JSON.parse(
+        readFileSync(this.statePath, "utf8"),
+      ) as Partial<FleetStateSnapshot>;
       this.counters = {
         run: asInteger(parsed.counters?.run),
         event: asInteger(parsed.counters?.event),
@@ -510,13 +558,19 @@ class FleetStateStore {
         task: asInteger(parsed.counters?.task),
         capability: asInteger(parsed.counters?.capability),
       };
-      for (const agent of parsed.agents ?? []) this.agents.set(agent.name, agent);
+      for (const agent of parsed.agents ?? [])
+        this.agents.set(agent.name, agent);
       for (const run of parsed.runs ?? []) this.runs.set(run.run_id, run);
-      for (const event of parsed.events ?? []) this.events.set(event.event_id, event);
-      for (const artifact of parsed.artifacts ?? []) this.artifacts.set(artifact.artifact_id, artifact);
-      for (const intent of parsed.intents ?? []) this.intents.set(intent.intent_id, intent);
-      for (const task of parsed.localTasks ?? []) this.localTasks.set(task.id, task);
-      for (const request of parsed.capabilityRequests ?? []) this.capabilityRequests.set(request.request_id, request);
+      for (const event of parsed.events ?? [])
+        this.events.set(event.event_id, event);
+      for (const artifact of parsed.artifacts ?? [])
+        this.artifacts.set(artifact.artifact_id, artifact);
+      for (const intent of parsed.intents ?? [])
+        this.intents.set(intent.intent_id, intent);
+      for (const task of parsed.localTasks ?? [])
+        this.localTasks.set(task.id, task);
+      for (const request of parsed.capabilityRequests ?? [])
+        this.capabilityRequests.set(request.request_id, request);
     } catch {
       // Invalid state file should not block startup.
     }
@@ -554,27 +608,54 @@ class FleetStateStore {
 }
 
 const tools = [
-  { name: "register_agent", description: "Register an agent identity in local Fleet MCP state." },
+  {
+    name: "register_agent",
+    description: "Register an agent identity in local Fleet MCP state.",
+  },
   { name: "heartbeat", description: "Record heartbeat status for an agent." },
-  { name: "record_run_start", description: "Create a run envelope and return run_id." },
+  {
+    name: "record_run_start",
+    description: "Create a run envelope and return run_id.",
+  },
   { name: "record_event", description: "Persist an event row for a run." },
-  { name: "record_artifact_content", description: "Persist artifact content for a run." },
+  {
+    name: "record_artifact_content",
+    description: "Persist artifact content for a run.",
+  },
   { name: "record_run_end", description: "Finalize a run and write summary." },
-  { name: "get_run", description: "Retrieve run, events, and artifacts by run_id." },
+  {
+    name: "get_run",
+    description: "Retrieve run, events, and artifacts by run_id.",
+  },
   { name: "signal_intent", description: "Queue an intent for a target agent." },
-  { name: "consume_open_intents", description: "Consume open intents for an agent." },
-  { name: "queue_local_task", description: "Queue a local task for browser/manual execution." },
+  {
+    name: "consume_open_intents",
+    description: "Consume open intents for an agent.",
+  },
+  {
+    name: "queue_local_task",
+    description: "Queue a local task for browser/manual execution.",
+  },
   { name: "get_local_task", description: "Retrieve a local task by task_id." },
   { name: "list_local_tasks", description: "List local tasks with filters." },
-  { name: "request_capability", description: "Create or reuse a capability request." },
+  {
+    name: "request_capability",
+    description: "Create or reuse a capability request.",
+  },
 ];
 
-const requiredSessionMethods = new Set(["notifications/initialized", "tools/list", "tools/call"]);
+const requiredSessionMethods = new Set([
+  "notifications/initialized",
+  "tools/list",
+  "tools/call",
+]);
 const sessions = new Set<string>();
 const fleetStore = new FleetStateStore(
   resolve(process.env.FLEET_MCP_STATE_PATH ?? "./fleet-mcp-local-state.json"),
 );
-const requiredAuthToken = normalizeAuthToken(process.env.FLEET_MCP_AUTH_TOKEN ?? process.env.MOTTO_MCP_AUTH_TOKEN ?? "");
+const requiredAuthToken = normalizeAuthToken(
+  process.env.FLEET_MCP_AUTH_TOKEN ?? process.env.MOTTO_MCP_AUTH_TOKEN ?? "",
+);
 
 const server = createServer(async (req, res) => {
   try {
@@ -591,17 +672,30 @@ const server = createServer(async (req, res) => {
     const rpc = parseRpcRequest(body);
     const method = rpc.method;
     if (!method) {
-      sendJsonRpcError(res, rpc.id ?? null, { code: -32600, message: "Invalid request: method is required" });
+      sendJsonRpcError(res, rpc.id ?? null, {
+        code: -32600,
+        message: "Invalid request: method is required",
+      });
       return;
     }
 
     const incomingSession = normalizeSessionId(req.headers["mcp-session-id"]);
     if (requiredSessionMethods.has(method) && !incomingSession) {
-      sendJsonRpcError(res, rpc.id ?? null, { code: -32002, message: "MCP session required" });
+      sendJsonRpcError(res, rpc.id ?? null, {
+        code: -32002,
+        message: "MCP session required",
+      });
       return;
     }
-    if (requiredSessionMethods.has(method) && incomingSession && !sessions.has(incomingSession)) {
-      sendJsonRpcError(res, rpc.id ?? null, { code: -32003, message: "Unknown MCP session" });
+    if (
+      requiredSessionMethods.has(method) &&
+      incomingSession &&
+      !sessions.has(incomingSession)
+    ) {
+      sendJsonRpcError(res, rpc.id ?? null, {
+        code: -32003,
+        message: "Unknown MCP session",
+      });
       return;
     }
 
@@ -635,7 +729,11 @@ const server = createServer(async (req, res) => {
           tools: tools.map((tool) => ({
             name: tool.name,
             description: tool.description,
-            inputSchema: { type: "object", properties: {}, additionalProperties: true },
+            inputSchema: {
+              type: "object",
+              properties: {},
+              additionalProperties: true,
+            },
           })),
         },
         incomingSession,
@@ -648,7 +746,12 @@ const server = createServer(async (req, res) => {
       const name = asOptionalString(params.name);
       const args = asRecord(params.arguments);
       if (!name) {
-        sendJsonRpcError(res, rpc.id ?? null, { code: -32602, message: "tools/call requires name" }, incomingSession);
+        sendJsonRpcError(
+          res,
+          rpc.id ?? null,
+          { code: -32602, message: "tools/call requires name" },
+          incomingSession,
+        );
         return;
       }
       const toolResult = dispatchToolCall(name, args);
@@ -664,7 +767,12 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    sendJsonRpcError(res, rpc.id ?? null, { code: -32601, message: `Unknown method: ${method}` }, incomingSession);
+    sendJsonRpcError(
+      res,
+      rpc.id ?? null,
+      { code: -32601, message: `Unknown method: ${method}` },
+      incomingSession,
+    );
   } catch (error) {
     const rpcErrorShape = asRpcError(error);
     sendJsonRpcError(res, null, rpcErrorShape);
@@ -767,8 +875,11 @@ function dispatchToolCall(name: string, args: Record<string, unknown>) {
   }
 }
 
-function requiredRunEndStatus(value: unknown): "success" | "error" | "cancelled" {
-  if (value === "success" || value === "error" || value === "cancelled") return value;
+function requiredRunEndStatus(
+  value: unknown,
+): "success" | "error" | "cancelled" {
+  if (value === "success" || value === "error" || value === "cancelled")
+    return value;
   throw rpcError(-32602, "status must be one of success, error, cancelled");
 }
 
@@ -817,7 +928,12 @@ function sendJsonRpcError(
   sendJson(res, 200, payload, sessionId);
 }
 
-function sendJson(res: ServerResponse, statusCode: number, payload: unknown, sessionId?: string | null) {
+function sendJson(
+  res: ServerResponse,
+  statusCode: number,
+  payload: unknown,
+  sessionId?: string | null,
+) {
   const headers: Record<string, string> = {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
@@ -845,7 +961,11 @@ function sendPlain(res: ServerResponse, statusCode: number, message: string) {
 
 function normalizeSessionId(value: unknown): string | null {
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  if (Array.isArray(value) && typeof value[0] === "string" && value[0].trim().length > 0) {
+  if (
+    Array.isArray(value) &&
+    typeof value[0] === "string" &&
+    value[0].trim().length > 0
+  ) {
     return value[0].trim();
   }
   return null;
@@ -862,7 +982,10 @@ function extractBearerToken(authHeader: string | undefined): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function isAuthorized(req: IncomingMessage, expectedToken: string | null): boolean {
+function isAuthorized(
+  req: IncomingMessage,
+  expectedToken: string | null,
+): boolean {
   if (!expectedToken) return true;
   const header = req.headers.authorization;
   const value = Array.isArray(header) ? header[0] : header;
@@ -892,7 +1015,9 @@ function asNumberOrNull(value: unknown): number | null {
 }
 
 function asInteger(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.trunc(value))
+    : 0;
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -908,7 +1033,11 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function rpcError(code: number, message: string, data?: unknown): JsonRpcErrorShape {
+function rpcError(
+  code: number,
+  message: string,
+  data?: unknown,
+): JsonRpcErrorShape {
   return { code, message, data };
 }
 

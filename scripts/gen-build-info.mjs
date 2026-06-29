@@ -7,7 +7,10 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function git(args) {
   try {
-    return execSync(`git ${args}`, { cwd: root, stdio: ["ignore", "pipe", "ignore"] })
+    return execSync(`git ${args}`, {
+      cwd: root,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
       .toString()
       .trim();
   } catch {
@@ -17,8 +20,12 @@ function git(args) {
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
-const commit = process.env.HERMES_BUILD_COMMIT || git("rev-parse HEAD") || "unknown";
-const ref = process.env.HERMES_BUILD_REF || git("rev-parse --abbrev-ref HEAD") || "unknown";
+const commit =
+  process.env.HERMES_BUILD_COMMIT || git("rev-parse HEAD") || "unknown";
+const ref =
+  process.env.HERMES_BUILD_REF ||
+  git("rev-parse --abbrev-ref HEAD") ||
+  "unknown";
 
 const info = {
   name: pkg.name,
@@ -29,5 +36,10 @@ const info = {
   builtAt: new Date().toISOString(),
 };
 
-writeFileSync(join(root, "build-info.json"), JSON.stringify(info, null, 2) + "\n");
-console.error(`build-info: ${info.name}@${info.version} commit=${info.commit} ref=${info.ref}`);
+writeFileSync(
+  join(root, "build-info.json"),
+  JSON.stringify(info, null, 2) + "\n",
+);
+console.error(
+  `build-info: ${info.name}@${info.version} commit=${info.commit} ref=${info.ref}`,
+);
